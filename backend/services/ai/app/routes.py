@@ -8,9 +8,7 @@ from app import store, relevance
 
 router = APIRouter(prefix="/api", tags=["memory"])
 
-# Initialize the SQLite schema as soon as this module loads, so the DB is
-# ready regardless of how the app is started (uvicorn, tests, etc.)
-store.init_db()
+
 
 
 @router.post("/extract-memory", response_model=ExtractedMemory)
