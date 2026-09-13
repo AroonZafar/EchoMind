@@ -1,0 +1,13 @@
+{
+  "name": "echomind",
+  "version": "0.1.0",
+  "description": "EchoMind memory backend foundation using SQLite.",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "db:init": "node src/db/init.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3"
+  }
+}
