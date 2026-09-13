@@ -1,175 +1,304 @@
-from fastapi import APIRouter, HTTPException
-from app.models import (
-    SpeechInput, ExtractedMemory, RememberResponse, RelevanceCheckRequest,
-    ForgetRequest, CompleteRequest, SuggestionActionRequest
-)
-from app.extractors import extract_memory_from_speech
-from app import store, relevance
+import os
+import json
+import uuid
+from datetime import datetime, timedelta
+from typing import Optional, List, Dict
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
-router = APIRouter(prefix="/api", tags=["memory"])
-
-# Initialize the SQLite schema as soon as this module loads, so the DB is
-# ready regardless of how the app is started (uvicorn, tests, etc.)
-store.init_db()
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://localhost/echomind_dev")
+SUGGESTION_COOLDOWN_MINUTES = 60
 
 
-@router.post("/extract-memory", response_model=ExtractedMemory)
-async def extract_memory(input_data: SpeechInput):
-    """
-    Extract structured memory from speech transcript (no storage side effect).
-    Useful for testing extraction quality in isolation.
-    """
+def get_conn():
+    """Get PostgreSQL connection"""
+    conn = psycopg2.connect(DATABASE_URL)
+    conn.autocommit = False
+    return conn
+
+
+def init_db():
+    """Initialize database schema"""
+    conn = get_conn()
+    cursor = conn.cursor()
+    
     try:
-        if not input_data.transcript or not input_data.transcript.strip():
-            raise HTTPException(status_code=400, detail="transcript cannot be empty")
-
-        result = await extract_memory_from_speech(input_data.transcript)
-        return result
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except HTTPException:
-        raise
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS memories (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            content JSONB,
+            importance FLOAT NOT NULL DEFAULT 0.5,
+            status TEXT NOT NULL DEFAULT 'active',
+            event_time TIMESTAMP,
+            due_time TIMESTAMP,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+        );
+        """)
+        
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS relations (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            source_memory_id UUID NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+            target_memory_id UUID NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+            relation_type TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT NOW()
+        );
+        """)
+        
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS proactive_suggestions (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            memory_id UUID NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+            message TEXT NOT NULL,
+            reason TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            cooldown_until TIMESTAMP,
+            UNIQUE(memory_id, status)
+        );
+        """)
+        
+        # Create indexes for better performance
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_memories_status ON memories(status);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_memories_title ON memories(LOWER(title));")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_relations_source ON relations(source_memory_id);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_suggestions_memory ON proactive_suggestions(memory_id);")
+        
+        conn.commit()
+        print("✅ Database initialized successfully!")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        conn.rollback()
+        print(f"❌ Error initializing database: {e}")
+    finally:
+        cursor.close()
+        conn.close()
 
 
-@router.post("/remember", response_model=RememberResponse)
-async def remember(input_data: SpeechInput):
-    """
-    Extract structured memory from speech AND persist it to the Personal
-    Memory Graph. Existing memories with the same name+type are updated
-    instead of duplicated (per doc: no endless duplicate creation).
-    """
+def find_memory_by_title(title: str, mem_type: Optional[str] = None) -> Optional[Dict]:
+    """Case-insensitive lookup for duplicate detection"""
+    conn = get_conn()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    
     try:
-        if not input_data.transcript or not input_data.transcript.strip():
-            raise HTTPException(status_code=400, detail="transcript cannot be empty")
-
-        extracted = await extract_memory_from_speech(input_data.transcript)
-
-        name_to_id = {}
-        saved_memories = []
-        for ent in extracted.entities:
-            saved = store.upsert_memory(
-                mem_type=ent.type,
-                title=ent.name,
-                content=ent.attributes or {},
-                importance=extracted.importance / 10.0 if extracted.importance > 1 else extracted.importance,
+        if mem_type:
+            cursor.execute(
+                "SELECT * FROM memories WHERE LOWER(title) = LOWER(%s) AND LOWER(type) = LOWER(%s) AND status != 'forgotten' LIMIT 1",
+                (title, mem_type)
             )
-            name_to_id[ent.name.lower()] = saved["id"]
-            saved_memories.append(saved)
-
-        saved_relations = []
-        for rel in extracted.relationships:
-            src_id = name_to_id.get(rel.source.lower())
-            tgt_id = name_to_id.get(rel.target.lower())
-            if not src_id:
-                placeholder = store.upsert_memory("fact", rel.source, {}, importance=0.3)
-                src_id = placeholder["id"]
-                name_to_id[rel.source.lower()] = src_id
-            if not tgt_id:
-                placeholder = store.upsert_memory("fact", rel.target, {}, importance=0.3)
-                tgt_id = placeholder["id"]
-                name_to_id[rel.target.lower()] = tgt_id
-
-            rel_id = store.add_relation(src_id, tgt_id, rel.relation)
-            saved_relations.append({"id": rel_id, "source": rel.source, "target": rel.target, "relation": rel.relation})
-
-        return RememberResponse(extracted=extracted, saved_memories=saved_memories, saved_relations=saved_relations)
-
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        else:
+            cursor.execute(
+                "SELECT * FROM memories WHERE LOWER(title) = LOWER(%s) AND status != 'forgotten' LIMIT 1",
+                (title,)
+            )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    finally:
+        cursor.close()
+        conn.close()
 
 
-@router.get("/memories")
-async def get_memories(include_forgotten: bool = False):
-    """'What do you remember?' query."""
+def upsert_memory(mem_type: str, title: str, content: dict, importance: float = 0.5) -> Dict:
+    """Create or update memory (no duplicates)"""
+    existing = find_memory_by_title(title, mem_type)
+    conn = get_conn()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    
     try:
-        memories = store.list_memories(include_forgotten=include_forgotten)
-        relations = store.list_relations()
-        return {"memories": memories, "relations": relations}
+        if existing:
+            # Merge content
+            merged_content = {**existing.get("content", {}), **content}
+            cursor.execute(
+                "UPDATE memories SET content = %s, importance = GREATEST(importance, %s), updated_at = NOW() WHERE id = %s RETURNING *",
+                (json.dumps(merged_content), importance, existing["id"])
+            )
+            row = cursor.fetchone()
+            conn.commit()
+            result = dict(row)
+            result["was_update"] = True
+            return result
+        else:
+            # Create new
+            cursor.execute(
+                "INSERT INTO memories (type, title, content, importance, status) VALUES (%s, %s, %s, %s, 'active') RETURNING *",
+                (mem_type, title, json.dumps(content), importance)
+            )
+            row = cursor.fetchone()
+            conn.commit()
+            result = dict(row)
+            result["was_update"] = False
+            return result
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        conn.rollback()
+        raise e
+    finally:
+        cursor.close()
+        conn.close()
 
 
-@router.post("/check-relevance")
-async def check_relevance(req: RelevanceCheckRequest):
-    """
-    Run the proactive relevance check across all active memories.
-    Returns any suggestions that cross the trigger threshold and aren't
-    in cooldown; each returned suggestion is recorded (starts its cooldown).
-    """
+def add_relation(source_memory_id: str, target_memory_id: str, relation_type: str) -> str:
+    """Add relation between memories (no duplicates)"""
+    conn = get_conn()
+    cursor = conn.cursor()
+    
     try:
-        suggestions = relevance.check_relevance(req.context or "")
-        return {"suggestions": suggestions, "count": len(suggestions)}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        # Check if exists
+        cursor.execute(
+            "SELECT id FROM relations WHERE source_memory_id = %s AND target_memory_id = %s AND relation_type = %s LIMIT 1",
+            (source_memory_id, target_memory_id, relation_type)
+        )
+        existing = cursor.fetchone()
+        
+        if existing:
+            return str(existing[0])
+        
+        # Create new
+        rel_id = str(uuid.uuid4())
+        cursor.execute(
+            "INSERT INTO relations (id, source_memory_id, target_memory_id, relation_type) VALUES (%s, %s, %s, %s)",
+            (rel_id, source_memory_id, target_memory_id, relation_type)
+        )
+        conn.commit()
+        return rel_id
+    finally:
+        cursor.close()
+        conn.close()
 
 
-@router.post("/suggestions/confirm")
-async def confirm_suggestion(req: SuggestionActionRequest):
-    ok = store.update_suggestion_status(req.suggestion_id, "accepted")
-    if not ok:
-        raise HTTPException(status_code=404, detail="Suggestion not found")
-    return {"status": "accepted"}
+def list_memories(include_forgotten: bool = False) -> List[Dict]:
+    """List all memories"""
+    conn = get_conn()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    
+    try:
+        if include_forgotten:
+            cursor.execute("SELECT * FROM memories ORDER BY updated_at DESC")
+        else:
+            cursor.execute("SELECT * FROM memories WHERE status != 'forgotten' ORDER BY updated_at DESC")
+        rows = cursor.fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        cursor.close()
+        conn.close()
 
 
-@router.post("/suggestions/dismiss")
-async def dismiss_suggestion(req: SuggestionActionRequest):
-    ok = store.update_suggestion_status(req.suggestion_id, "dismissed")
-    if not ok:
-        raise HTTPException(status_code=404, detail="Suggestion not found")
-    return {"status": "dismissed"}
+def list_relations() -> List[Dict]:
+    """List all relations"""
+    conn = get_conn()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    
+    try:
+        cursor.execute("SELECT * FROM relations")
+        rows = cursor.fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        cursor.close()
+        conn.close()
 
 
-@router.post("/forget")
-async def forget(req: ForgetRequest):
-    """'Forget this' action. Marks a memory forgotten (soft delete);
-    it will no longer appear in normal retrieval or relevance checks."""
-    if not req.title and not req.memory_id:
-        raise HTTPException(status_code=400, detail="Provide either title or memory_id")
-    ok = store.forget_memory(title=req.title, memory_id=req.memory_id)
-    if not ok:
-        raise HTTPException(status_code=404, detail="Memory not found")
-    return {"status": "forgotten"}
+def forget_memory(title: Optional[str] = None, memory_id: Optional[str] = None) -> bool:
+    """Mark memory as forgotten"""
+    conn = get_conn()
+    cursor = conn.cursor()
+    
+    try:
+        if memory_id:
+            cursor.execute("UPDATE memories SET status = 'forgotten', updated_at = NOW() WHERE id = %s", (memory_id,))
+        elif title:
+            cursor.execute("UPDATE memories SET status = 'forgotten', updated_at = NOW() WHERE LOWER(title) = LOWER(%s)", (title,))
+        else:
+            return False
+        
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        cursor.close()
+        conn.close()
 
 
-@router.post("/complete")
-async def complete(req: CompleteRequest):
-    """Mark a task/event memory completed so it stops generating reminders."""
-    if not req.title and not req.memory_id:
-        raise HTTPException(status_code=400, detail="Provide either title or memory_id")
-    ok = store.mark_completed(title=req.title, memory_id=req.memory_id)
-    if not ok:
-        raise HTTPException(status_code=404, detail="Memory not found")
-    return {"status": "completed"}
+def mark_completed(title: Optional[str] = None, memory_id: Optional[str] = None) -> bool:
+    """Mark memory as completed"""
+    conn = get_conn()
+    cursor = conn.cursor()
+    
+    try:
+        if memory_id:
+            cursor.execute("UPDATE memories SET status = 'completed', updated_at = NOW() WHERE id = %s", (memory_id,))
+        elif title:
+            cursor.execute("UPDATE memories SET status = 'completed', updated_at = NOW() WHERE LOWER(title) = LOWER(%s)", (title,))
+        else:
+            return False
+        
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        cursor.close()
+        conn.close()
 
 
-@router.get("/health")
-async def health_check():
-    """Health check endpoint"""
-    return {
-        "status": "AI service is running",
-        "service": "EchoMind AI Extraction Service"
-    }
+def get_last_suggestion(memory_id: str) -> Optional[Dict]:
+    """Get last suggestion for a memory"""
+    conn = get_conn()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    
+    try:
+        cursor.execute(
+            "SELECT * FROM proactive_suggestions WHERE memory_id = %s ORDER BY created_at DESC LIMIT 1",
+            (memory_id,)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    finally:
+        cursor.close()
+        conn.close()
 
 
-@router.get("/")
-async def root():
-    """Root endpoint"""
-    return {
-        "name": "EchoMind AI Service",
-        "version": "1.1.0",
-        "endpoints": {
-            "health": "/api/health",
-            "extract": "/api/extract-memory (extract only, no storage)",
-            "remember": "/api/remember (extract + save to memory graph)",
-            "memories": "/api/memories (list what's remembered)",
-            "check_relevance": "/api/check-relevance (proactive suggestions)",
-            "forget": "/api/forget",
-            "complete": "/api/complete"
-        }
-    }
+def is_in_cooldown(memory_id: str) -> bool:
+    """Check if memory is in suggestion cooldown"""
+    last = get_last_suggestion(memory_id)
+    if not last or not last.get("cooldown_until"):
+        return False
+    
+    try:
+        cooldown_time = last["cooldown_until"]
+        if isinstance(cooldown_time, str):
+            cooldown_time = datetime.fromisoformat(cooldown_time)
+        return datetime.utcnow() < cooldown_time
+    except Exception:
+        return False
+
+
+def record_suggestion(memory_id: str, message: str, reason: str) -> Dict:
+    """Record a proactive suggestion"""
+    conn = get_conn()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    
+    try:
+        cooldown_until = datetime.utcnow() + timedelta(minutes=SUGGESTION_COOLDOWN_MINUTES)
+        
+        cursor.execute(
+            "INSERT INTO proactive_suggestions (memory_id, message, reason, status, cooldown_until) VALUES (%s, %s, %s, 'shown', %s) RETURNING *",
+            (memory_id, message, reason, cooldown_until)
+        )
+        row = cursor.fetchone()
+        conn.commit()
+        return dict(row) if row else {}
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def update_suggestion_status(suggestion_id: str, status: str) -> bool:
+    """Update suggestion status"""
+    conn = get_conn()
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("UPDATE proactive_suggestions SET status = %s WHERE id = %s", (status, suggestion_id))
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        cursor.close()
+        conn.close()

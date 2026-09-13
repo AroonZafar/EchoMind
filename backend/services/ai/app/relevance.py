@@ -11,6 +11,7 @@ Per doc section 8 (Agent Tools and Behavior):
 
 These weights are prototype starting values, not validated research results.
 """
+import json
 import re
 from app import store
 
@@ -49,6 +50,7 @@ def _time_relevance(memory: dict) -> float:
 
 def _importance(memory: dict) -> float:
     imp = memory.get("importance", 0.5)
+    # our extractor stores importance 0-10ish sometimes; normalize defensively
     if imp > 1:
         imp = imp / 10.0
     return max(0.0, min(1.0, imp))
