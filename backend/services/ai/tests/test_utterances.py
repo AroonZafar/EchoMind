@@ -1,14 +1,3 @@
-"""
-Person B Definition-of-Done check:
-"Test on at least 20 example utterances. Include new memories, updates,
-duplicates, vague language, irrelevant speech, completed tasks, and
-forgotten memories."
-
-Usage:
-    1. Start the AI service:  python main.py
-    2. In another terminal:   pip install requests
-    3. Run:                   python tests/test_utterances.py
-"""
 import requests
 
 BASE = "http://localhost:8001/api"
