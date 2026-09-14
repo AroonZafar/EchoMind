@@ -1,1 +1,0 @@
-# EchoMind AI Service Package
