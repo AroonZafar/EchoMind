@@ -1,16 +1,3 @@
-"""
-Deterministic relevance engine.
-
-Per doc section 8 (Agent Tools and Behavior):
-    score = 0.30 * context_match
-          + 0.25 * time_relevance
-          + 0.20 * importance
-          + 0.15 * unresolved
-          - 0.10 * recent_repeat
-    Trigger only when score >= 0.65 and cooldown has expired.
-
-These weights are prototype starting values, not validated research results.
-"""
 import json
 import re
 from app import store
