@@ -17,6 +17,7 @@ app.get('/api/health', (req, res) => {
 app.get('/api/graph', async (req, res) => {
   try {
     const memories = await memoryRepository.listMemories();
+
     const nodes = memories.map((memory) => ({
       id: memory.id,
       type: memory.type,
@@ -30,42 +31,83 @@ app.get('/api/graph', async (req, res) => {
 
     return res.status(200).json({ nodes });
   } catch (error) {
-    return res.status(500).json({ error: 'Failed to load memory graph.' });
+    console.error('Graph error:', error);
+    return res.status(500).json({
+      error: 'Failed to load memory graph.'
+    });
   }
 });
 
+/*
+ * Create a new memory
+ */
+app.post('/api/memory', async (req, res) => {
+  try {
+    const memory = await memoryRepository.createMemory(req.body || {});
+
+    return res.status(201).json(memory);
+  } catch (error) {
+    console.error('Create memory error:', error);
+
+    return res.status(400).json({
+      error: error.message
+    });
+  }
+});
+
+/*
+ * Search memories
+ */
 app.post('/api/memory/search', async (req, res) => {
   const { query } = req.body || {};
 
   if (typeof query !== 'string' || !query.trim()) {
-    return res.status(400).json({ error: 'query is required and cannot be empty.' });
+    return res.status(400).json({
+      error: 'query is required and cannot be empty.'
+    });
   }
 
   try {
     const results = await memoryRepository.searchMemories(query);
+
     return res.status(200).json({ results });
   } catch (error) {
-    return res.status(500).json({ error: 'Failed to search memories.' });
+    console.error('Search memory error:', error);
+
+    return res.status(500).json({
+      error: 'Failed to search memories.'
+    });
   }
 });
 
+/*
+ * Forget a memory
+ */
 app.post('/api/memory/forget', async (req, res) => {
   const { id } = req.body || {};
 
   if (typeof id !== 'string' || !id.trim()) {
-    return res.status(400).json({ error: 'id is required.' });
+    return res.status(400).json({
+      error: 'id is required.'
+    });
   }
 
   try {
     const memory = await memoryRepository.forgetMemory(id);
 
     if (!memory) {
-      return res.status(404).json({ error: 'Memory not found.' });
+      return res.status(404).json({
+        error: 'Memory not found.'
+      });
     }
 
     return res.status(200).json(memory);
   } catch (error) {
-    return res.status(500).json({ error: 'Failed to forget memory.' });
+    console.error('Forget memory error:', error);
+
+    return res.status(500).json({
+      error: 'Failed to forget memory.'
+    });
   }
 });
 
