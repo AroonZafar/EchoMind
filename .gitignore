@@ -1,4 +1,7 @@
 node_modules/
+.next/
+.npm-cache/
+*.tsbuildinfo
 .DS_Store
 .env
 .env.*
