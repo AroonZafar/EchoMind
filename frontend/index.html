@@ -192,6 +192,12 @@
               <h2>Remembered Facts</h2>
             </div>
           </div>
+          <form class="input-row memory-search" id="memorySearchForm">
+            <label class="sr-only" for="memorySearchInput">Search memories</label>
+            <input class="memory-search-input" id="memorySearchInput" type="search" placeholder="Search memories" />
+            <button class="primary-button small" type="submit">Search</button>
+          </form>
+          <div class="memory-search-status memory-meta" id="memorySearchStatus" aria-live="polite"></div>
           <div class="memory-list" id="memoryList">
             <div class="memory-item">
               <span class="memory-type person">Person</span>
