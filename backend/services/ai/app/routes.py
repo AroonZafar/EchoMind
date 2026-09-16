@@ -65,8 +65,6 @@ async def remember(input_data: SpeechInput):
             # fact-type memory for it so the edge has somewhere to point.
             if not src_id:
                 placeholder = store.upsert_memory("fact", rel.source, {}, importance=0.3)
-                src_id = placeholder["id"]
-                name_to_id[rel.source.lower()] = src_id
             if not tgt_id:
                 placeholder = store.upsert_memory("fact", rel.target, {}, importance=0.3)
                 tgt_id = placeholder["id"]
