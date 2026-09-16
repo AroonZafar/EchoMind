@@ -79,6 +79,21 @@ async function listRelations() {
   return result.rows;
 }
 
+async function addRelation(sourceMemoryId, targetMemoryId, relationType) {
+  const result = await db.query(
+    `
+      INSERT INTO relations (
+        source_memory_id, target_memory_id, relation_type
+      )
+      VALUES ($1, $2, $3)
+      RETURNING *
+    `,
+    [sourceMemoryId, targetMemoryId, relationType]
+  );
+
+  return result.rows[0];
+}
+
 async function searchMemories(query = '') {
   const trimmedQuery = String(query || '').trim();
 
@@ -165,6 +180,7 @@ module.exports = {
   getMemoryById,
   listMemories,
   listRelations,
+  addRelation,
   searchMemories,
   updateMemory,
   forgetMemory
