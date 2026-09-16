@@ -13,7 +13,7 @@
  *   reply.audio        → forwarded as base64 data to the playback handler
  */
 
-const TOKEN_ENDPOINT = "http://localhost:3001/api/voice-token";
+const TOKEN_ENDPOINT = "/api/voice-token";
 const ASSEMBLYAI_WS_BASE = "wss://agents.assemblyai.com/v1/ws";
 
 /**
@@ -71,6 +71,7 @@ async function fetchToken() {
  * @param {function} [handlers.onUserTranscript]  - Called with { text, isFinal } for user speech
  * @param {function} [handlers.onAgentResponse]   - Called with { text, isFinal } for agent speech
  * @param {function} [handlers.onAgentAudio]      - Called with reply.audio data
+ * @param {function} [handlers.onReplyInterrupted] - Called when reply.done reports interruption
  * @param {function} [handlers.onError]           - Called on WebSocket error
  * @param {function} [handlers.onClose]           - Called when the connection closes
  * @returns {Promise<object>} Resolves with the session.ready payload

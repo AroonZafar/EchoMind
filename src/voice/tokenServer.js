@@ -1,6 +1,7 @@
-require("dotenv").config();
+import dotenv from "dotenv";
+import http from "node:http";
 
-const http = require("http");
+dotenv.config();
 
 const PORT = 3001;
 

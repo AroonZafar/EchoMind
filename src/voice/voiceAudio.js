@@ -27,7 +27,7 @@ import { sendAudio, isConnected } from "./voiceAgent.js";
 import { getMicrophoneStream }    from "./microphone.js";
 
 /** Path to the AudioWorklet processor module — served by the static server */
-const PROCESSOR_URL = "/src/voice/pcm-processor.js";
+const PROCESSOR_URL = "/voice/pcm-processor.js";
 
 /** @type {AudioContext|null} */
 let audioCtx = null;
