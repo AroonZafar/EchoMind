@@ -70,10 +70,13 @@
         </div>
         <div class="topbar-actions">
           <button class="icon-button" id="refreshButton">↻</button>
-          <button class="voice-button" id="micButton">
-            <span class="mic-icon">🎙</span>
-            <span class="voice-button-text" id="voiceStatus">Voice: Connected</span>
-          </button>
+          <div class="voice-controls">
+            <button class="voice-button" id="micButton">
+              <span class="mic-icon">🎙</span>
+              <span class="voice-button-text" id="voiceStatus">Voice: Ready</span>
+            </button>
+            <span class="mic-status-text" id="micStatus">Microphone: Off</span>
+          </div>
         </div>
       </header>
 
@@ -241,6 +244,7 @@
   </div>
 
   <script src="app.js"></script>
+  <script type="module" src="src/voice/voiceAppBridge.js"></script>
 </body>
 </html>
 </body>

@@ -265,6 +265,21 @@ body {
   font-size: 18px;
 }
 
+/* Step 6 — microphone status label */
+.voice-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.mic-status-text {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted, #888);
+  letter-spacing: 0.03em;
+}
+
 .dashboard-grid {
   display: grid;
   grid-template-columns: minmax(300px, 0.9fr) minmax(360px, 1.1fr) minmax(280px, 0.8fr);

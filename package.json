@@ -5,9 +5,12 @@
   "main": "server.js",
   "type": "commonjs",
   "scripts": {
-    "db:init": "node src/db/init.js"
+    "db:init": "node src/db/init.js",
+    "voice": "node src/voice/tokenServer.js"
   },
   "dependencies": {
-    "better-sqlite3": "^13.0.3"
+    "assemblyai": "^4.41.1",
+    "better-sqlite3": "^13.0.3",
+    "dotenv": "^17.4.2"
   }
 }
