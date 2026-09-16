@@ -1,4 +1,4 @@
-﻿import os
+import os
 import json
 import re
 import httpx
@@ -20,7 +20,9 @@ Transcript: "{transcript}"
 Respond with ONLY valid JSON, no other text, in exactly this shape:
 {{
   "entities": [
-    {{"type": "person", "name": "...", "attributes": {{}}}}
+    {{"type": "person", "name": "...", "attributes": {{}}}},
+    {{"type": "task", "name": "...", "attributes": {{"due": "..."}}}},
+    {{"type": "event", "name": "...", "attributes": {{"when": "..."}}}}
   ],
   "relationships": [
     {{"source": "...", "target": "...", "relation": "..."}}
@@ -33,6 +35,7 @@ Respond with ONLY valid JSON, no other text, in exactly this shape:
 Rules:
 - "entities" is a list of objects, each with exactly the keys "type", "name", "attributes".
 - "relationships" is a list of objects with "source", "target", "relation".
+- ALWAYS extract tasks, deadlines, and events mentioned (e.g. "finish X before Friday" -> a task entity with the deadline in attributes.due), not just people.
 - If there are no entities or relationships, use empty lists [].
 - Do not add any keys other than shown above.'''
 
