@@ -1,3 +1,4 @@
+from typing import Optional, Tuple
 from fastapi import APIRouter, HTTPException
 from app.models import (
     SpeechInput, ExtractedMemory, RememberResponse, RelevanceCheckRequest,
@@ -11,19 +12,25 @@ router = APIRouter(prefix="/api", tags=["memory"])
 FIRST_PERSON = {"i", "me", "my", "myself", "mine"}
 
 
-def resolve_or_create(name: str, name_to_id: dict) -> tuple[str, str]:
+def resolve_known(name: str, name_to_id: dict) -> Optional[Tuple[str, str]]:
     """Resolve an entity name to a memory ID, collapsing first-person
-    pronouns (I/me/my/myself) into one canonical 'self' node instead of
-    creating a separate literal 'I' memory every time.
-    Returns (memory_id, display_name) so callers can report the resolved
-    name instead of the raw pronoun."""
-    key = "self" if name.lower() in FIRST_PERSON else name.lower()
-    display_name = "You" if key == "self" else name
+    pronouns (I/me/my/myself) into one canonical 'self' node.
+    Only resolves names that are either a first-person pronoun or one of
+    the entities already saved this request (name_to_id) — it will NOT
+    create a new node for a stray string the model put in a relation
+    (e.g. a bare date like "Friday" that isn't its own entity). Returns
+    (memory_id, display_name), or None if the name can't be resolved."""
+    if name.lower() in FIRST_PERSON:
+        key = "self"
+        if key not in name_to_id:
+            mem = store.upsert_memory("fact", "You", {}, importance=0.3)
+            name_to_id[key] = mem["id"]
+        return name_to_id[key], "You"
+
+    key = name.lower()
     if key in name_to_id:
-        return name_to_id[key], display_name
-    mem = store.upsert_memory("fact", display_name, {}, importance=0.3)
-    name_to_id[key] = mem["id"]
-    return mem["id"], display_name
+        return name_to_id[key], name
+    return None
 
 
 @router.post("/extract-memory", response_model=ExtractedMemory)
@@ -73,11 +80,17 @@ async def remember(input_data: SpeechInput):
 
         saved_relations = []
         for rel in extracted.relationships:
-            # Resolves the entity if already saved above; otherwise creates
-            # a lightweight fact-type memory for it (e.g. a paraphrased
-            # event), collapsing first-person pronouns into one 'self' node.
-            src_id, src_name = resolve_or_create(rel.source, name_to_id)
-            tgt_id, tgt_name = resolve_or_create(rel.target, name_to_id)
+            # Only link entities we actually saved above (or "I"/self) —
+            # skip relations that point at a stray string (e.g. a bare
+            # "Friday") that isn't itself an extracted entity, instead of
+            # silently creating a junk node for it.
+            src = resolve_known(rel.source, name_to_id)
+            tgt = resolve_known(rel.target, name_to_id)
+            if not src or not tgt:
+                print(f"Skipping relation with unresolved endpoint: {rel.source} -> {rel.target}")
+                continue
+            src_id, src_name = src
+            tgt_id, tgt_name = tgt
 
             rel_id = store.add_relation(src_id, tgt_id, rel.relation)
             saved_relations.append({"id": rel_id, "source": src_name, "target": tgt_name, "relation": rel.relation})
