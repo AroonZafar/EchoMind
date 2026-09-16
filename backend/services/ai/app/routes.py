@@ -11,17 +11,19 @@ router = APIRouter(prefix="/api", tags=["memory"])
 FIRST_PERSON = {"i", "me", "my", "myself", "mine"}
 
 
-def resolve_or_create(name: str, name_to_id: dict) -> str:
+def resolve_or_create(name: str, name_to_id: dict) -> tuple[str, str]:
     """Resolve an entity name to a memory ID, collapsing first-person
     pronouns (I/me/my/myself) into one canonical 'self' node instead of
-    creating a separate literal 'I' memory every time."""
+    creating a separate literal 'I' memory every time.
+    Returns (memory_id, display_name) so callers can report the resolved
+    name instead of the raw pronoun."""
     key = "self" if name.lower() in FIRST_PERSON else name.lower()
+    display_name = "You" if key == "self" else name
     if key in name_to_id:
-        return name_to_id[key]
-    title = "You" if key == "self" else name
-    mem = store.upsert_memory("fact", title, {}, importance=0.3)
+        return name_to_id[key], display_name
+    mem = store.upsert_memory("fact", display_name, {}, importance=0.3)
     name_to_id[key] = mem["id"]
-    return mem["id"]
+    return mem["id"], display_name
 
 
 @router.post("/extract-memory", response_model=ExtractedMemory)
@@ -74,11 +76,11 @@ async def remember(input_data: SpeechInput):
             # Resolves the entity if already saved above; otherwise creates
             # a lightweight fact-type memory for it (e.g. a paraphrased
             # event), collapsing first-person pronouns into one 'self' node.
-            src_id = resolve_or_create(rel.source, name_to_id)
-            tgt_id = resolve_or_create(rel.target, name_to_id)
+            src_id, src_name = resolve_or_create(rel.source, name_to_id)
+            tgt_id, tgt_name = resolve_or_create(rel.target, name_to_id)
 
             rel_id = store.add_relation(src_id, tgt_id, rel.relation)
-            saved_relations.append({"id": rel_id, "source": rel.source, "target": rel.target, "relation": rel.relation})
+            saved_relations.append({"id": rel_id, "source": src_name, "target": tgt_name, "relation": rel.relation})
 
         return RememberResponse(extracted=extracted, saved_memories=saved_memories, saved_relations=saved_relations)
 
