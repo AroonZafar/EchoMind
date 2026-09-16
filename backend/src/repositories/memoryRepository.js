@@ -71,6 +71,14 @@ async function listMemories({ status = null, type = null } = {}) {
   return result.rows.map(rowToMemory);
 }
 
+async function listRelations() {
+  const result = await db.query(
+    'SELECT * FROM relations ORDER BY created_at DESC'
+  );
+
+  return result.rows;
+}
+
 async function searchMemories(query = '') {
   const trimmedQuery = String(query || '').trim();
 
@@ -156,6 +164,7 @@ module.exports = {
   createMemory,
   getMemoryById,
   listMemories,
+  listRelations,
   searchMemories,
   updateMemory,
   forgetMemory

@@ -17,6 +17,7 @@ app.get('/api/health', (req, res) => {
 app.get('/api/graph', async (req, res) => {
   try {
     const memories = await memoryRepository.listMemories();
+    const relations = await memoryRepository.listRelations();
 
     const nodes = memories.map((memory) => ({
       id: memory.id,
@@ -29,7 +30,14 @@ app.get('/api/graph', async (req, res) => {
       due_time: memory.due_time
     }));
 
-    return res.status(200).json({ nodes });
+    const edges = relations.map((relation) => ({
+      id: relation.id,
+      source: relation.source_memory_id,
+      target: relation.target_memory_id,
+      relation_type: relation.relation_type
+    }));
+
+    return res.status(200).json({ nodes, edges });
   } catch (error) {
     console.error('Graph error:', error);
     return res.status(500).json({
