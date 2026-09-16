@@ -4,6 +4,9 @@ FastAPI service that handles memory extraction, relevance scoring, and
 proactive suggestions for EchoMind. Built on the AI/ML API (aimlapi.com)
 and Neon PostgreSQL.
 
+**Live:** https://echomind.fastapicloud.dev
+**Interactive API docs (Swagger UI):** https://echomind.fastapicloud.dev/docs
+
 ## Structure
 
 ```
@@ -45,21 +48,26 @@ cp .env.example .env         # then fill in real values
 uvicorn main:app --reload --port 8001
 ```
 
-Health check: `GET http://localhost:8001/health`
+Health check: `GET http://localhost:8001/api/health`
 
 ## API endpoints
 
+All routes are prefixed with `/api`. Base URL locally is
+`http://localhost:8001`, in production `https://echomind.fastapicloud.dev`.
+
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/extract-memory` | Extract structured memory from a raw utterance |
-| POST | `/remember` | Extract + save a memory in one call |
-| GET | `/memories` | List stored memories |
-| POST | `/check-relevance` | Score a memory's current relevance |
-| POST | `/suggestions/confirm` | Mark a suggestion as accepted |
-| POST | `/suggestions/dismiss` | Mark a suggestion as dismissed |
-| POST | `/forget` | Soft-delete a memory |
-| POST | `/complete` | Mark a task/event memory as completed |
-| GET | `/health` | Health check |
+| POST | `/api/extract-memory` | Extract structured memory from a raw utterance (no storage) |
+| POST | `/api/remember` | Extract + save a memory in one call |
+| GET | `/api/memories` | List stored memories |
+| POST | `/api/check-relevance` | Score a memory's current relevance |
+| POST | `/api/suggestions/confirm` | Mark a suggestion as accepted |
+| POST | `/api/suggestions/dismiss` | Mark a suggestion as dismissed |
+| POST | `/api/forget` | Soft-delete a memory |
+| POST | `/api/complete` | Mark a task/event memory as completed |
+| GET | `/api/health` | Health check |
+
+Try any of these directly in the browser via the [Swagger UI](https://echomind.fastapicloud.dev/docs) — no auth required.
 
 ## Tests
 
@@ -79,8 +87,21 @@ fastapi cloud env set DATABASE_URL
 fastapi deploy
 ```
 
-Note: pin Python to 3.12 (`.python-version` file, UTF-8 encoded) — some
-dependencies (`psycopg2-binary`) don't yet have prebuilt wheels for 3.14.
+Notes:
+- Pin Python to 3.12 (`.python-version` file, UTF-8 encoded) — some
+  dependencies (`psycopg2-binary`) don't yet have prebuilt wheels for 3.14.
+- Use `fastapi[standard]` (not bare `fastapi`) in `requirements.txt`, or the
+  `fastapi` CLI won't be installed in the deployed container.
+- Use `psycopg2-binary>=2.9.9` (a range, not an exact pin) so `uv` can pick
+  a version with a valid prebuilt wheel.
+- `pyproject.toml` needs both of these to deploy cleanly:
+  ```toml
+  [tool.fastapi]
+  entrypoint = "main:app"
+
+  [tool.uv]
+  package = false
+  ```
 
 ## Notes for the team
 
