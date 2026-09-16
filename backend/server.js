@@ -119,6 +119,39 @@ app.post('/api/memory/forget', async (req, res) => {
   }
 });
 
+/*
+ * Create a relation between two memories
+ */
+app.post('/api/memory/relation', async (req, res) => {
+  const {
+    source_memory_id,
+    target_memory_id,
+    relation_type
+  } = req.body || {};
+
+  if (!source_memory_id || !target_memory_id || !relation_type) {
+    return res.status(400).json({
+      error: 'source_memory_id, target_memory_id, and relation_type are required.'
+    });
+  }
+
+  try {
+    const relation = await memoryRepository.addRelation(
+      source_memory_id,
+      target_memory_id,
+      relation_type
+    );
+
+    return res.status(201).json(relation);
+  } catch (error) {
+    console.error('Create relation error:', error);
+
+    return res.status(400).json({
+      error: error.message
+    });
+  }
+});
+
 app.use(express.static(__dirname));
 
 app.listen(PORT, HOST, () => {
