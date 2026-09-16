@@ -8,7 +8,20 @@ from app import store, relevance
 
 router = APIRouter(prefix="/api", tags=["memory"])
 
+FIRST_PERSON = {"i", "me", "my", "myself", "mine"}
 
+
+def resolve_or_create(name: str, name_to_id: dict) -> str:
+    """Resolve an entity name to a memory ID, collapsing first-person
+    pronouns (I/me/my/myself) into one canonical 'self' node instead of
+    creating a separate literal 'I' memory every time."""
+    key = "self" if name.lower() in FIRST_PERSON else name.lower()
+    if key in name_to_id:
+        return name_to_id[key]
+    title = "You" if key == "self" else name
+    mem = store.upsert_memory("fact", title, {}, importance=0.3)
+    name_to_id[key] = mem["id"]
+    return mem["id"]
 
 
 @router.post("/extract-memory", response_model=ExtractedMemory)
@@ -58,17 +71,11 @@ async def remember(input_data: SpeechInput):
 
         saved_relations = []
         for rel in extracted.relationships:
-            src_id = name_to_id.get(rel.source.lower())
-            tgt_id = name_to_id.get(rel.target.lower())
-            # If either side of the relation wasn't extracted as its own
-            # entity (e.g. "I", or a paraphrased event), create a lightweight
-            # fact-type memory for it so the edge has somewhere to point.
-            if not src_id:
-                placeholder = store.upsert_memory("fact", rel.source, {}, importance=0.3)
-            if not tgt_id:
-                placeholder = store.upsert_memory("fact", rel.target, {}, importance=0.3)
-                tgt_id = placeholder["id"]
-                name_to_id[rel.target.lower()] = tgt_id
+            # Resolves the entity if already saved above; otherwise creates
+            # a lightweight fact-type memory for it (e.g. a paraphrased
+            # event), collapsing first-person pronouns into one 'self' node.
+            src_id = resolve_or_create(rel.source, name_to_id)
+            tgt_id = resolve_or_create(rel.target, name_to_id)
 
             rel_id = store.add_relation(src_id, tgt_id, rel.relation)
             saved_relations.append({"id": rel_id, "source": rel.source, "target": rel.target, "relation": rel.relation})
