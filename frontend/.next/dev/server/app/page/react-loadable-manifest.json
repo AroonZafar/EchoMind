@@ -1,8 +1,0 @@
-{
-  "[project]/frontend/node_modules/react-force-graph-2d/dist/react-force-graph-2d.mjs [app-client] (ecmascript, next/dynamic entry)": {
-    "id": "[project]/frontend/node_modules/react-force-graph-2d/dist/react-force-graph-2d.mjs [app-client] (ecmascript, next/dynamic entry)",
-    "files": [
-      "static/chunks/19xk_1ust3_s._.js"
-    ]
-  }
-}
