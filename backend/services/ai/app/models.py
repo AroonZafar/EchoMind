@@ -21,15 +21,13 @@ class ExtractedMemory(BaseModel):
 class SpeechInput(BaseModel):
     transcript: str
 
-# ---- New models for storage / relevance / lifecycle ----
-
 class RememberResponse(BaseModel):
     extracted: ExtractedMemory
     saved_memories: List[Dict]
     saved_relations: List[Dict]
 
 class RelevanceCheckRequest(BaseModel):
-    context: Optional[str] = ""
+    context: str = ""
 
 class SuggestionOut(BaseModel):
     memory_id: str
