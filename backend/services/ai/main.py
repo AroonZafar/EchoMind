@@ -1,13 +1,18 @@
+from dotenv import load_dotenv
+
+# Load environment variables FIRST, before importing anything from `app` --
+# app.routes -> app.extractors -> app.store, and app/store.py reads
+# DATABASE_URL at module import time. If load_dotenv() runs after these
+# imports, os.getenv("DATABASE_URL") returns None during that import and
+# store.py silently falls back to the localhost default.
+load_dotenv()
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routes import router
 import uvicorn
 import os
-from dotenv import load_dotenv
 from app.store import init_db
-
-# Load environment variables FIRST
-load_dotenv()
 
 app = FastAPI(
     title="EchoMind AI Service",

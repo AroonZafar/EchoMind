@@ -30,6 +30,7 @@ class RememberResponse(BaseModel):
 
 class RelevanceCheckRequest(BaseModel):
     context: Optional[str] = ""
+    force: Optional[bool] = False  # bypass the 60-min cooldown, for testing/demo
 
 class SuggestionOut(BaseModel):
     memory_id: str
