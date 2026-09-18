@@ -1,3 +1,4 @@
+from typing import Optional, Tuple
 from fastapi import APIRouter, HTTPException
 from app.models import (
     SpeechInput, ExtractedMemory, RememberResponse, RelevanceCheckRequest,
@@ -8,9 +9,28 @@ from app import store, relevance
 
 router = APIRouter(prefix="/api", tags=["memory"])
 
-# Initialize the SQLite schema as soon as this module loads, so the DB is
-# ready regardless of how the app is started (uvicorn, tests, etc.)
-store.init_db()
+FIRST_PERSON = {"i", "me", "my", "myself", "mine"}
+
+
+def resolve_known(name: str, name_to_id: dict) -> Optional[Tuple[str, str]]:
+    """Resolve an entity name to a memory ID, collapsing first-person
+    pronouns (I/me/my/myself) into one canonical 'self' node.
+    Only resolves names that are either a first-person pronoun or one of
+    the entities already saved this request (name_to_id) — it will NOT
+    create a new node for a stray string the model put in a relation
+    (e.g. a bare date like "Friday" that isn't its own entity). Returns
+    (memory_id, display_name), or None if the name can't be resolved."""
+    if name.lower() in FIRST_PERSON:
+        key = "self"
+        if key not in name_to_id:
+            mem = store.upsert_memory("fact", "You", {}, importance=0.3)
+            name_to_id[key] = mem["id"]
+        return name_to_id[key], "You"
+
+    key = name.lower()
+    if key in name_to_id:
+        return name_to_id[key], name
+    return None
 
 
 @router.post("/extract-memory", response_model=ExtractedMemory)
@@ -39,12 +59,26 @@ async def remember(input_data: SpeechInput):
     Extract structured memory from speech AND persist it to the Personal
     Memory Graph. Existing memories with the same name+type are updated
     instead of duplicated (per doc: no endless duplicate creation).
+
+    If extraction fails twice in a row (bad/unparseable JSON from the
+    LLM on both the first attempt and the stricter-reminder retry), the
+    transcript is stored as an unlinked raw memory instead of being
+    dropped or returned as a 500 -- see extractors._raw_fallback_memory.
     """
     try:
         if not input_data.transcript or not input_data.transcript.strip():
             raise HTTPException(status_code=400, detail="transcript cannot be empty")
 
         extracted = await extract_memory_from_speech(input_data.transcript)
+
+        if extracted.memory_type == "raw_unlinked" and not extracted.entities:
+            saved = store.upsert_memory(
+                mem_type="raw",
+                title=extracted.summary[:60] or "unrecognized memory",
+                content={"raw_transcript": extracted.summary, "extraction_failed": True},
+                importance=0.5,
+            )
+            return RememberResponse(extracted=extracted, saved_memories=[saved], saved_relations=[])
 
         name_to_id = {}
         saved_memories = []
@@ -60,22 +94,20 @@ async def remember(input_data: SpeechInput):
 
         saved_relations = []
         for rel in extracted.relationships:
-            src_id = name_to_id.get(rel.source.lower())
-            tgt_id = name_to_id.get(rel.target.lower())
-            # If either side of the relation wasn't extracted as its own
-            # entity (e.g. "I", or a paraphrased event), create a lightweight
-            # fact-type memory for it so the edge has somewhere to point.
-            if not src_id:
-                placeholder = store.upsert_memory("fact", rel.source, {}, importance=0.3)
-                src_id = placeholder["id"]
-                name_to_id[rel.source.lower()] = src_id
-            if not tgt_id:
-                placeholder = store.upsert_memory("fact", rel.target, {}, importance=0.3)
-                tgt_id = placeholder["id"]
-                name_to_id[rel.target.lower()] = tgt_id
+            # Only link entities we actually saved above (or "I"/self) —
+            # skip relations that point at a stray string (e.g. a bare
+            # "Friday") that isn't itself an extracted entity, instead of
+            # silently creating a junk node for it.
+            src = resolve_known(rel.source, name_to_id)
+            tgt = resolve_known(rel.target, name_to_id)
+            if not src or not tgt:
+                print(f"Skipping relation with unresolved endpoint: {rel.source} -> {rel.target}")
+                continue
+            src_id, src_name = src
+            tgt_id, tgt_name = tgt
 
             rel_id = store.add_relation(src_id, tgt_id, rel.relation)
-            saved_relations.append({"id": rel_id, "source": rel.source, "target": rel.target, "relation": rel.relation})
+            saved_relations.append({"id": rel_id, "source": src_name, "target": tgt_name, "relation": rel.relation})
 
         return RememberResponse(extracted=extracted, saved_memories=saved_memories, saved_relations=saved_relations)
 
@@ -104,9 +136,15 @@ async def check_relevance(req: RelevanceCheckRequest):
     Run the proactive relevance check across all active memories.
     Returns any suggestions that cross the trigger threshold and aren't
     in cooldown; each returned suggestion is recorded (starts its cooldown).
+
+    Scoring (context/time/importance/unresolved) stays a fast deterministic
+    formula, per the doc's own §35 recommendation not to over-engineer the
+    trigger logic. The suggestion's spoken phrasing is now generated by the
+    LLM (see relevance.py), with the original templated line kept as an
+    automatic fallback if that call fails or times out.
     """
     try:
-        suggestions = relevance.check_relevance(req.context or "")
+        suggestions = await relevance.check_relevance(req.context or "", force=req.force or False)
         return {"suggestions": suggestions, "count": len(suggestions)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
@@ -165,7 +203,7 @@ async def root():
     """Root endpoint"""
     return {
         "name": "EchoMind AI Service",
-        "version": "1.1.0",
+        "version": "1.2.0",
         "endpoints": {
             "health": "/api/health",
             "extract": "/api/extract-memory (extract only, no storage)",

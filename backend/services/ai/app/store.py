@@ -271,15 +271,29 @@ def is_in_cooldown(memory_id: str) -> bool:
 
 
 def record_suggestion(memory_id: str, message: str, reason: str) -> Dict:
-    """Record a proactive suggestion"""
+    """Record a proactive suggestion. Upserts on (memory_id, status) --
+    the table has a UNIQUE constraint on that pair, so once a memory has
+    been suggested once (status='shown'), a plain INSERT for the same
+    memory would violate that constraint every time after. ON CONFLICT
+    refreshes the existing 'shown' row (new message/reason/cooldown)
+    instead of erroring."""
     conn = get_conn()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
-    
+
     try:
         cooldown_until = datetime.utcnow() + timedelta(minutes=SUGGESTION_COOLDOWN_MINUTES)
-        
+
         cursor.execute(
-            "INSERT INTO proactive_suggestions (memory_id, message, reason, status, cooldown_until) VALUES (%s, %s, %s, 'shown', %s) RETURNING *",
+            """
+            INSERT INTO proactive_suggestions (memory_id, message, reason, status, cooldown_until)
+            VALUES (%s, %s, %s, 'shown', %s)
+            ON CONFLICT (memory_id, status) DO UPDATE
+            SET message = EXCLUDED.message,
+                reason = EXCLUDED.reason,
+                cooldown_until = EXCLUDED.cooldown_until,
+                created_at = NOW()
+            RETURNING *
+            """,
             (memory_id, message, reason, cooldown_until)
         )
         row = cursor.fetchone()
