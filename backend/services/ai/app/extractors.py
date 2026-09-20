@@ -2,6 +2,12 @@
 import json
 import re
 import httpx
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Load AI service environment variables
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+load_dotenv(Path(__file__).resolve().parents[4] / ".env")
 from app.models import ExtractedMemory, MemoryEntity, Relationship
 from app.store import upsert_memory, add_relation, is_in_cooldown, record_suggestion
 

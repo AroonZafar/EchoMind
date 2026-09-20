@@ -4,8 +4,25 @@ from app import store
 
 TRIGGER_THRESHOLD = 0.65
 
-_TIME_KEYWORDS_TODAY = {"today", "tonight", "this evening", "this morning", "this afternoon"}
-_TIME_KEYWORDS_SOON = {"tomorrow", "friday", "monday", "tuesday", "wednesday", "thursday", "saturday", "sunday", "this week"}
+_TIME_KEYWORDS_TODAY = {
+    "today",
+    "tonight",
+    "this evening",
+    "this morning",
+    "this afternoon",
+}
+
+_TIME_KEYWORDS_SOON = {
+    "tomorrow",
+    "friday",
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "saturday",
+    "sunday",
+    "this week",
+}
 
 
 def _tokenize(text: str):
@@ -15,23 +32,30 @@ def _tokenize(text: str):
 def _context_match(memory: dict, context_text: str) -> float:
     if not context_text:
         return 0.5  # neutral default when no live context is given
-    mem_text = memory["title"] + " " + (memory.get("content") or "")
+
+    mem_text = memory["title"] + " " + str(memory.get("content") or "")
     mem_tokens = _tokenize(mem_text)
     ctx_tokens = _tokenize(context_text)
+
     if not mem_tokens or not ctx_tokens:
         return 0.0
+
     overlap = mem_tokens & ctx_tokens
     return round(len(overlap) / len(mem_tokens | ctx_tokens), 3)
 
 
 def _time_relevance(memory: dict) -> float:
-    text = (memory["title"] + " " + (memory.get("content") or "")).lower()
+    text = (memory["title"] + " " + str(memory.get("content") or "")).lower()
+
     if memory.get("due_time") or memory.get("event_time"):
         return 0.8  # has an explicit time set (future improvement: parse and compare to now)
+
     if any(k in text for k in _TIME_KEYWORDS_TODAY):
         return 1.0
+
     if any(k in text for k in _TIME_KEYWORDS_SOON):
         return 0.6
+
     return 0.3
 
 
@@ -66,6 +90,7 @@ def compute_relevance(memory: dict, context_text: str = "") -> dict:
         + 0.15 * unresolved
         - 0.10 * recent_repeat
     )
+
     return {
         "memory_id": memory["id"],
         "title": memory["title"],
@@ -85,12 +110,16 @@ def _build_suggestion_message(memory: dict) -> str:
     demo never breaks if the AI API is slow/unavailable."""
     title = memory["title"]
     mtype = memory.get("type", "fact")
+
     if mtype == "task":
         return f"You still have '{title}' pending. Want a reminder?"
+
     if mtype == "event":
         return f"'{title}' is coming up. Want to check in?"
+
     if mtype == "person":
         return f"You mentioned {title} recently. Want to follow up?"
+
     return f"You might want to revisit: '{title}'."
 
 
@@ -106,16 +135,26 @@ def check_relevance(context_text: str = ""):
     for memory in memories:
         if store.is_in_cooldown(memory["id"]):
             continue
+
         scored = compute_relevance(memory, context_text)
+
         if scored["score"] >= TRIGGER_THRESHOLD:
             message = _build_suggestion_message(memory)
+
             reason = (
                 f"score={scored['score']} "
                 f"(context={scored['components']['context_match']}, "
                 f"time={scored['components']['time_relevance']}, "
                 f"importance={scored['components']['importance']})"
             )
+
             record = store.record_suggestion(memory["id"], message, reason)
-            triggered.append({**scored, "message": message, "reason": reason, "suggestion_id": record["id"]})
+
+            triggered.append({
+                **scored,
+                "message": message,
+                "reason": reason,
+                "suggestion_id": record["id"],
+            })
 
     return triggered
