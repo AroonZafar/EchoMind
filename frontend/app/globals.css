@@ -1,0 +1,14 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: dark; }
+html { scroll-behavior: smooth; }
+body { background: #090b12; color: #f2f2f6; }
+* { box-sizing: border-box; }
+::selection { background: #7664dd; color: white; }
+.ambient { background: radial-gradient(ellipse 45% 30% at 50% 27%, rgba(90,70,177,.15), transparent 75%), radial-gradient(ellipse 35% 25% at 82% 70%, rgba(39,80,117,.10), transparent 80%); }
+.grid-texture { background-image: linear-gradient(rgba(255,255,255,.025) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.025) 1px, transparent 1px); background-size: 32px 32px; }
+@keyframes breathe { 0%,100% { transform: scale(1); opacity: .45; } 50% { transform: scale(1.18); opacity: .12; } }
+.breathe { animation: breathe 2s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .breathe { animation: none; } }
