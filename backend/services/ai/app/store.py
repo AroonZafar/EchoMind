@@ -100,8 +100,16 @@ def find_memory_by_title(title: str, mem_type: Optional[str] = None) -> Optional
         conn.close()
 
 
-def upsert_memory(mem_type: str, title: str, content: dict, importance: float = 0.5) -> Dict:
-    """Create or update memory (no duplicates)"""
+def upsert_memory(mem_type: str, title: str, content: dict, importance: float = 0.5,
+                   event_time=None, due_time=None) -> Dict:
+    """Create or update memory (no duplicates).
+
+    event_time/due_time are optional resolved absolute datetimes (see
+    app/date_resolver.py) -- the proactive relevance engine needs an
+    actual comparable timestamp, not just the raw phrase sitting in
+    content.when/content.due. COALESCE on update so a later mention that
+    doesn't include a time phrase doesn't blow away a previously-resolved
+    one."""
     existing = find_memory_by_title(title, mem_type)
     conn = get_conn()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -111,8 +119,14 @@ def upsert_memory(mem_type: str, title: str, content: dict, importance: float = 
             # Merge content
             merged_content = {**existing.get("content", {}), **content}
             cursor.execute(
-                "UPDATE memories SET content = %s, importance = GREATEST(importance, %s), updated_at = NOW() WHERE id = %s RETURNING *",
-                (json.dumps(merged_content), importance, existing["id"])
+                """UPDATE memories
+                   SET content = %s,
+                       importance = GREATEST(importance, %s),
+                       event_time = COALESCE(%s, event_time),
+                       due_time = COALESCE(%s, due_time),
+                       updated_at = NOW()
+                   WHERE id = %s RETURNING *""",
+                (json.dumps(merged_content), importance, event_time, due_time, existing["id"])
             )
             row = cursor.fetchone()
             conn.commit()
@@ -122,8 +136,9 @@ def upsert_memory(mem_type: str, title: str, content: dict, importance: float = 
         else:
             # Create new
             cursor.execute(
-                "INSERT INTO memories (type, title, content, importance, status) VALUES (%s, %s, %s, %s, 'active') RETURNING *",
-                (mem_type, title, json.dumps(content), importance)
+                """INSERT INTO memories (type, title, content, importance, status, event_time, due_time)
+                   VALUES (%s, %s, %s, %s, 'active', %s, %s) RETURNING *""",
+                (mem_type, title, json.dumps(content), importance, event_time, due_time)
             )
             row = cursor.fetchone()
             conn.commit()
