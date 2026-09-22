@@ -6,8 +6,25 @@ from app import store
 
 TRIGGER_THRESHOLD = 0.65
 
-_TIME_KEYWORDS_TODAY = {"today", "tonight", "this evening", "this morning", "this afternoon"}
-_TIME_KEYWORDS_SOON = {"tomorrow", "friday", "monday", "tuesday", "wednesday", "thursday", "saturday", "sunday", "this week"}
+_TIME_KEYWORDS_TODAY = {
+    "today",
+    "tonight",
+    "this evening",
+    "this morning",
+    "this afternoon",
+}
+
+_TIME_KEYWORDS_SOON = {
+    "tomorrow",
+    "friday",
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "saturday",
+    "sunday",
+    "this week",
+}
 
 AIML_API_KEY = os.getenv("AIML_API_KEY")
 AIML_API_URL = os.getenv("AIML_API_URL", "https://api.aimlapi.com/v1/chat/completions")
@@ -40,8 +57,10 @@ def _context_match(memory: dict, context_text: str) -> float:
     mem_text = memory["title"] + " " + _content_to_text(memory.get("content"))
     mem_tokens = _tokenize(mem_text)
     ctx_tokens = _tokenize(context_text)
+
     if not mem_tokens or not ctx_tokens:
         return 0.0
+
     overlap = mem_tokens & ctx_tokens
     return round(len(overlap) / len(mem_tokens | ctx_tokens), 3)
 
@@ -50,10 +69,13 @@ def _time_relevance(memory: dict) -> float:
     text = (memory["title"] + " " + _content_to_text(memory.get("content"))).lower()
     if memory.get("due_time") or memory.get("event_time"):
         return 0.8  # has an explicit time set (future improvement: parse and compare to now)
+
     if any(k in text for k in _TIME_KEYWORDS_TODAY):
         return 1.0
+
     if any(k in text for k in _TIME_KEYWORDS_SOON):
         return 0.6
+
     return 0.3
 
 
@@ -101,6 +123,7 @@ def compute_relevance(memory: dict, context_text: str = "", force: bool = False)
         + 0.15 * unresolved
         - 0.10 * recent_repeat
     )
+
     return {
         "memory_id": memory["id"],
         "title": memory["title"],
@@ -121,12 +144,16 @@ def _build_suggestion_message(memory: dict) -> str:
     breaks just because the AI API is slow/unavailable."""
     title = memory["title"]
     mtype = memory.get("type", "fact")
+
     if mtype == "task":
         return f"You still have '{title}' pending. Want a reminder?"
+
     if mtype == "event":
         return f"'{title}' is coming up. Want to check in?"
+
     if mtype == "person":
         return f"You mentioned {title} recently. Want to follow up?"
+
     return f"You might want to revisit: '{title}'."
 
 
@@ -185,6 +212,7 @@ async def check_relevance(context_text: str = "", force: bool = False):
     for memory in memories:
         if not force and store.is_in_cooldown(memory["id"]):
             continue
+
         scored = compute_relevance(memory, context_text, force=force)
         if scored["score"] >= TRIGGER_THRESHOLD:
             reason = (
@@ -195,6 +223,12 @@ async def check_relevance(context_text: str = "", force: bool = False):
             )
             message = await _generate_llm_suggestion_message(memory, reason)
             record = store.record_suggestion(memory["id"], message, reason)
-            triggered.append({**scored, "message": message, "reason": reason, "suggestion_id": record["id"]})
+
+            triggered.append({
+                **scored,
+                "message": message,
+                "reason": reason,
+                "suggestion_id": record["id"],
+            })
 
     return triggered
