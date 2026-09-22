@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { LoaderCircle, Mic, Square } from "lucide-react";
 

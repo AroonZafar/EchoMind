@@ -1,4 +1,4 @@
-/**
+﻿/**
  * AudioWorklet processor for 24 kHz mono PCM16 microphone capture.
  */
 

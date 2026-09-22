@@ -1,4 +1,4 @@
-import { AudioLines } from "lucide-react";
+﻿import { AudioLines } from "lucide-react";
 import type { MicState } from "./MicButton";
 
 export type ConversationTurn = { id: string; speaker: "user" | "agent"; text: string };

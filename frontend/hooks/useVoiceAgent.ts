@@ -1,19 +1,19 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { connect, disconnect, isConnected } from "../../src/voice/voiceAgent.js";
+import { connect, disconnect, isConnected } from "@/lib/voice/voiceAgent.js";
 import {
   startMicrophone,
   stopMicrophone,
   isMicrophoneActive,
-} from "../../src/voice/microphone.js";
-import { startStreaming, stopStreaming } from "../../src/voice/voiceAudio.js";
+} from "@/lib/voice/microphone.js";
+import { startStreaming, stopStreaming } from "@/lib/voice/voiceAudio.js";
 import {
   prepareReplyAudio,
   playReplyAudio,
   flushReplyAudio,
   stopReplyAudio,
-} from "../../src/voice/replyAudio.js";
+} from "@/lib/voice/replyAudio.js";
 
 export type VoiceTurn = {
   id: string;

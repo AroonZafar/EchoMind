@@ -1,4 +1,7 @@
 node_modules/
+.next/
+.npm-cache/
+*.tsbuildinfo
 .DS_Store
 frontend/.next/
 .env
@@ -11,3 +14,6 @@ frontend/.next/
 /data/*.sqlite
 /data/*.sqlite3
 /data/*.db-journal
+
+__pycache__/
+*.pyc
