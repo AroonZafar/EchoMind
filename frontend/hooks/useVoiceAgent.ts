@@ -34,7 +34,7 @@ function createTurnId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-export function useVoiceAgent() {
+export function useVoiceAgent(onFinalUserTranscript?: (text: string) => void) {
   const [connectionState, setConnectionState] = useState<VoiceConnectionState>("ready");
   const [microphoneState, setMicrophoneState] = useState<VoiceMicrophoneState>("off");
   const [turns, setTurns] = useState<VoiceTurn[]>([]);
@@ -62,7 +62,8 @@ export function useVoiceAgent() {
     userDraftRef.current = "";
     setUserDraft("");
     appendTurn("user", text);
-  }, [appendTurn]);
+    if (text.trim()) onFinalUserTranscript?.(text.trim());
+  }, [appendTurn, onFinalUserTranscript]);
 
   const handleAgentResponse = useCallback(({ text, isFinal }: { text: string; isFinal: boolean }) => {
     if (!isFinal) {
