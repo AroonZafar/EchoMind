@@ -5,6 +5,7 @@ from app.models import (
     ForgetRequest, CompleteRequest, SuggestionActionRequest
 )
 from app.extractors import extract_memory_from_speech
+from app.date_resolver import resolve_relative_date
 from app import store, relevance
 
 router = APIRouter(prefix="/api", tags=["memory"])
@@ -83,11 +84,25 @@ async def remember(input_data: SpeechInput):
         name_to_id = {}
         saved_memories = []
         for ent in extracted.entities:
+            attrs = ent.attributes or {}
+            # Resolve whatever time phrase the model captured
+            # (attributes.when for events, attributes.due for tasks) into
+            # an absolute, comparable datetime for the proactive-trigger
+            # engine. The raw phrase stays in content either way; this
+            # just adds the timestamp on top of it.
+            raw_phrase = attrs.get("when") or attrs.get("due")
+            resolved = resolve_relative_date(raw_phrase) if raw_phrase else None
+            etype = ent.type.lower()
+            event_time = resolved if etype == "event" else None
+            due_time = resolved if etype == "task" else None
+
             saved = store.upsert_memory(
                 mem_type=ent.type,
                 title=ent.name,
-                content=ent.attributes or {},
+                content=attrs,
                 importance=extracted.importance / 10.0 if extracted.importance > 1 else extracted.importance,
+                event_time=event_time,
+                due_time=due_time,
             )
             name_to_id[ent.name.lower()] = saved["id"]
             saved_memories.append(saved)

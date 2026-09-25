@@ -2,6 +2,7 @@ import os
 import json
 import re
 import httpx
+from datetime import datetime
 from app import store
 
 TRIGGER_THRESHOLD = 0.65
@@ -66,10 +67,28 @@ def _context_match(memory: dict, context_text: str) -> float:
 
 
 def _time_relevance(memory: dict) -> float:
-    text = (memory["title"] + " " + _content_to_text(memory.get("content"))).lower()
-    if memory.get("due_time") or memory.get("event_time"):
-        return 0.8  # has an explicit time set (future improvement: parse and compare to now)
+    resolved = memory.get("due_time") or memory.get("event_time")
+    if resolved:
+        # psycopg2 returns TIMESTAMP columns as real datetime objects
+        # already; only fall back to parsing if something upstream ever
+        # hands this back as a string (e.g. a JSON-serialized API response).
+        if isinstance(resolved, str):
+            try:
+                resolved = datetime.fromisoformat(resolved)
+            except ValueError:
+                resolved = None
+        if resolved:
+            delta_hours = (resolved - datetime.utcnow()).total_seconds() / 3600
+            if delta_hours <= 24:
+                return 1.0   # overdue, or due/happening within the next day
+            if delta_hours <= 72:
+                return 0.6   # within the next few days
+            return 0.3       # further out -- still known, just not urgent yet
 
+    # No resolved timestamp (date_resolver couldn't parse the phrase, or
+    # there was no time phrase at all) -- fall back to the keyword
+    # heuristic so scoring still degrades gracefully instead of going to 0.
+    text = (memory["title"] + " " + _content_to_text(memory.get("content"))).lower()
     if any(k in text for k in _TIME_KEYWORDS_TODAY):
         return 1.0
 
