@@ -19,7 +19,10 @@ app.get('/api/graph', async (req, res) => {
     const memories = await memoryRepository.listMemories();
     const relations = await memoryRepository.listRelations();
 
-    const nodes = memories.map((memory) => ({
+    const visibleMemories = memories.filter((memory) => memory.status !== 'forgotten');
+    const visibleIds = new Set(visibleMemories.map((memory) => memory.id));
+
+    const nodes = visibleMemories.map((memory) => ({
       id: memory.id,
       type: memory.type,
       title: memory.title,
@@ -30,12 +33,17 @@ app.get('/api/graph', async (req, res) => {
       due_time: memory.due_time
     }));
 
-    const edges = relations.map((relation) => ({
-      id: relation.id,
-      source: relation.source_memory_id,
-      target: relation.target_memory_id,
-      relation_type: relation.relation_type
-    }));
+    const edges = relations
+      .filter((relation) =>
+        visibleIds.has(relation.source_memory_id) &&
+        visibleIds.has(relation.target_memory_id)
+      )
+      .map((relation) => ({
+        id: relation.id,
+        source: relation.source_memory_id,
+        target: relation.target_memory_id,
+        relation_type: relation.relation_type
+      }));
 
     return res.status(200).json({ nodes, edges });
   } catch (error) {
