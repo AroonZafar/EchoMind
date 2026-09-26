@@ -1,15 +1,13 @@
-const fs = require('fs');
-const path = require('path');
-const Database = require('better-sqlite3');
+const { Pool } = require('pg');
 
-const dataDir = path.join(__dirname, '..', '..', 'data');
-const dbPath = path.join(dataDir, 'echomind.sqlite');
+try {
+  require('dotenv').config();
+} catch (err) {
+  // dotenv is optional here; if installed, it will load process.env.DATABASE_URL from .env.
+}
 
-fs.mkdirSync(dataDir, { recursive: true });
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL
+});
 
-const db = new Database(dbPath);
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
-
-module.exports = db;
-module.exports.dbPath = dbPath;
+module.exports = pool;

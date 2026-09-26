@@ -1,13 +1,16 @@
 {
   "name": "echomind",
   "version": "0.1.0",
-  "description": "EchoMind memory backend foundation using SQLite.",
+  "description": "EchoMind memory backend foundation using PostgreSQL and Neon.",
   "main": "server.js",
   "type": "commonjs",
   "scripts": {
+    "start": "node server.js",
     "db:init": "node src/db/init.js"
   },
   "dependencies": {
-    "better-sqlite3": "^13.0.3"
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "pg": "^8.23.0"
   }
 }
