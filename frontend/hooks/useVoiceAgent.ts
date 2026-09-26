@@ -30,6 +30,12 @@ export type VoiceConnectionState =
 
 export type VoiceMicrophoneState = "off" | "starting" | "on" | "error";
 
+export type RememberResponse = {
+  extracted: unknown;
+  saved_memories: unknown[];
+  saved_relations: unknown[];
+};
+
 function createTurnId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
@@ -41,8 +47,10 @@ export function useVoiceAgent() {
   const [userDraft, setUserDraft] = useState("");
   const [agentDraft, setAgentDraft] = useState("");
   const [error, setError] = useState("");
+  const [rememberResponses, setRememberResponses] = useState<RememberResponse[]>([]);
   const userDraftRef = useRef("");
   const agentDraftRef = useRef("");
+  const lastFinalUserTranscriptRef = useRef<string | null>(null);
 
   const appendTurn = useCallback((speaker: VoiceTurn["speaker"], text: string) => {
     const trimmed = text.trim();
@@ -50,8 +58,9 @@ export function useVoiceAgent() {
     setTurns((current) => [...current, { id: createTurnId(), speaker, text: trimmed }]);
   }, []);
 
-  const handleUserTranscript = useCallback(({ text, isFinal }: { text: string; isFinal: boolean }) => {
+  const handleUserTranscript = useCallback(async ({ text, isFinal }: { text: string; isFinal: boolean }) => {
     if (!isFinal) {
+      lastFinalUserTranscriptRef.current = null;
       userDraftRef.current = userDraftRef.current
         ? `${userDraftRef.current} ${text}`
         : text;
@@ -59,9 +68,31 @@ export function useVoiceAgent() {
       return;
     }
 
+    const trimmedText = text.trim();
+    if (!trimmedText || lastFinalUserTranscriptRef.current === trimmedText) return;
+
+    lastFinalUserTranscriptRef.current = trimmedText;
     userDraftRef.current = "";
     setUserDraft("");
-    appendTurn("user", text);
+    appendTurn("user", trimmedText);
+
+    try {
+      const response = await fetch("/api/remember", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transcript: trimmedText }),
+      });
+      const responseBody = await response.json();
+
+      if (!response.ok) {
+        throw new Error(responseBody.error ?? responseBody.detail ?? "Could not save memory.");
+      }
+
+      setRememberResponses((current) => [...current, responseBody as RememberResponse]);
+    } catch (rememberError) {
+      const message = rememberError instanceof Error ? rememberError.message : "Could not save memory.";
+      setError(message);
+    }
   }, [appendTurn]);
 
   const handleAgentResponse = useCallback(({ text, isFinal }: { text: string; isFinal: boolean }) => {
@@ -170,6 +201,7 @@ export function useVoiceAgent() {
     turns,
     userDraft,
     agentDraft,
+    rememberResponses,
     error,
     isConnected: connectionState === "connected",
     start,
