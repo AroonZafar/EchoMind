@@ -21,8 +21,6 @@ class ExtractedMemory(BaseModel):
 class SpeechInput(BaseModel):
     transcript: str
 
-# ---- New models for storage / relevance / lifecycle ----
-
 class RememberResponse(BaseModel):
     extracted: ExtractedMemory
     saved_memories: List[Dict]

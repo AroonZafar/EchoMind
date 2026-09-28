@@ -1,127 +1,173 @@
-const crypto = require('crypto');
 const db = require('../db/database');
 
 function rowToMemory(row) {
   return row;
 }
 
-function createMemory(data) {
+async function createMemory(data) {
   if (!data || !data.title || !String(data.title).trim()) {
     throw new Error('title is required and cannot be empty.');
   }
 
-  if (!data || !data.content || !String(data.content).trim()) {
+  if (data.content === undefined || data.content === null) {
     throw new Error('content is required and cannot be empty.');
   }
 
-  const now = new Date().toISOString();
-  const memory = {
-    id: data.id || crypto.randomUUID(),
-    type: data.type || 'Fact',
-    title: String(data.title).trim(),
-    content: String(data.content).trim(),
-    importance: typeof data.importance === 'number' ? data.importance : 0,
-    status: data.status || 'active',
-    event_time: data.event_time || null,
-    due_time: data.due_time || null,
-    created_at: now,
-    updated_at: now
-  };
+  const title = String(data.title).trim();
+  const content =
+    typeof data.content === 'object'
+      ? data.content
+      : { text: String(data.content).trim() };
+
+  const values = [
+    data.type || 'Fact',
+    title,
+    content,
+    typeof data.importance === 'number' ? data.importance : 0.5,
+    data.status || 'active',
+    data.event_time || null,
+    data.due_time || null
+  ];
 
   const sql = `
     INSERT INTO memories (
-      id, type, title, content, importance, status,
-      event_time, due_time, created_at, updated_at
-    ) VALUES (
-      @id, @type, @title, @content, @importance, @status,
-      @event_time, @due_time, @created_at, @updated_at
+      type, title, content, importance, status,
+      event_time, due_time
     )
+    VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7)
+    RETURNING *
   `;
 
-  db.prepare(sql).run(memory);
-  return getMemoryById(memory.id);
+  const result = await db.query(sql, values);
+  return rowToMemory(result.rows[0]);
 }
 
-function getMemoryById(id) {
-  const sql = `SELECT * FROM memories WHERE id = ?`;
-  const row = db.prepare(sql).get(id);
-  return row ? rowToMemory(row) : null;
+async function getMemoryById(id) {
+  const result = await db.query(
+    'SELECT * FROM memories WHERE id = $1',
+    [id]
+  );
+
+  return result.rows[0] ? rowToMemory(result.rows[0]) : null;
 }
 
-function listMemories({ status = null, type = null } = {}) {
+async function listMemories({ status = null, type = null } = {}) {
   let sql = 'SELECT * FROM memories WHERE 1 = 1';
   const params = [];
 
   if (status) {
-    sql += ' AND status = ?';
     params.push(status);
+    sql += ` AND status = $${params.length}`;
   }
 
   if (type) {
-    sql += ' AND type = ?';
     params.push(type);
+    sql += ` AND type = $${params.length}`;
   }
 
   sql += ' ORDER BY created_at DESC';
 
-  const rows = db.prepare(sql).all(...params);
-  return rows.map(rowToMemory);
+  const result = await db.query(sql, params);
+  return result.rows.map(rowToMemory);
 }
 
-function searchMemories(query = '') {
+async function listRelations() {
+  const result = await db.query(
+    'SELECT * FROM relations ORDER BY created_at DESC'
+  );
+
+  return result.rows;
+}
+
+async function addRelation(sourceMemoryId, targetMemoryId, relationType) {
+  const result = await db.query(
+    `
+      INSERT INTO relations (
+        source_memory_id, target_memory_id, relation_type
+      )
+      VALUES ($1, $2, $3)
+      RETURNING *
+    `,
+    [sourceMemoryId, targetMemoryId, relationType]
+  );
+
+  return result.rows[0];
+}
+
+async function searchMemories(query = '') {
   const trimmedQuery = String(query || '').trim();
 
   if (!trimmedQuery) {
     return [];
   }
 
-  const q = `%${trimmedQuery}%`;
+  const search = `%${trimmedQuery}%`;
+
   const sql = `
-    SELECT * FROM memories
+    SELECT *
+    FROM memories
     WHERE status != 'forgotten'
       AND (
-        title LIKE ?
-        OR content LIKE ?
-        OR type LIKE ?
+        title ILIKE $1
+        OR content::text ILIKE $1
+        OR type ILIKE $1
       )
     ORDER BY created_at DESC
   `;
 
-  const rows = db.prepare(sql).all(q, q, q);
-  return rows.map(rowToMemory);
+  const result = await db.query(sql, [search]);
+  return result.rows.map(rowToMemory);
 }
 
-function updateMemory(id, updates) {
-  const existing = getMemoryById(id);
+async function updateMemory(id, updates) {
+  const existing = await getMemoryById(id);
+
   if (!existing) {
     return null;
   }
 
   const next = {
     ...existing,
-    ...updates,
-    updated_at: new Date().toISOString()
+    ...updates
   };
+
+  const content =
+    typeof next.content === 'object'
+      ? next.content
+      : { text: String(next.content ?? '').trim() };
 
   const sql = `
     UPDATE memories
-       SET type = @type,
-           title = @title,
-           content = @content,
-           importance = @importance,
-           status = @status,
-           event_time = @event_time,
-           due_time = @due_time,
-           updated_at = @updated_at
-     WHERE id = @id
+       SET type = $1,
+           title = $2,
+           content = $3::jsonb,
+           importance = $4,
+           status = $5,
+           event_time = $6,
+           due_time = $7,
+           updated_at = NOW()
+     WHERE id = $8
+     RETURNING *
   `;
 
-  db.prepare(sql).run(next);
-  return getMemoryById(id);
+  const values = [
+    next.type,
+    String(next.title).trim(),
+    content,
+    next.importance,
+    next.status,
+    next.event_time || null,
+    next.due_time || null,
+    id
+  ];
+
+  const result = await db.query(sql, values);
+  return result.rows[0] ? rowToMemory(result.rows[0]) : null;
 }
 
-function forgetMemory(id) {
-  const existing = getMemoryById(id);
+async function forgetMemory(id) {
+  const existing = await getMemoryById(id);
+
   if (!existing) {
     return null;
   }
@@ -133,6 +179,8 @@ module.exports = {
   createMemory,
   getMemoryById,
   listMemories,
+  listRelations,
+  addRelation,
   searchMemories,
   updateMemory,
   forgetMemory

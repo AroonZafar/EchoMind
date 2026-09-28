@@ -3,7 +3,9 @@ node_modules/
 .npm-cache/
 *.tsbuildinfo
 .DS_Store
+frontend/.next/
 .env
+.env.local
 .env.*
 !.env.example
 
