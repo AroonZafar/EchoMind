@@ -29,12 +29,21 @@ export async function POST(request: NextRequest) {
       cache: "no-store",
     });
     const responseBody = await response.text();
+    const upstreamType = response.headers.get("content-type") ?? "";
+
+    if (!upstreamType.includes("json")) {
+      console.error(`Remember proxy got non-JSON response from ${endpoint} (HTTP ${response.status})`);
+      return NextResponse.json(
+        {
+          error: `AI memory service returned a non-JSON response (HTTP ${response.status}). Check AI_SERVICE_URL (${aiServiceUrl}).`,
+        },
+        { status: response.ok ? 502 : response.status },
+      );
+    }
 
     return new NextResponse(responseBody, {
       status: response.status,
-      headers: {
-        "Content-Type": response.headers.get("content-type") ?? "application/json",
-      },
+      headers: { "Content-Type": upstreamType },
     });
   } catch (error) {
     console.error("Remember proxy failed:", error);
