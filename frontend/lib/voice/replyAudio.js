@@ -11,6 +11,12 @@ const SAMPLE_RATE = 24000;
 /** Small startup/rebuffer delay (seconds) to smooth out bursty network delivery. */
 const PLAYBACK_LEAD_SECONDS = 0.15;
 
+/** Tiny restart delay after a mid-reply underrun. */
+const UNDERRUN_LEAD_SECONDS = 0.02;
+
+/** Silence longer than this means the previous reply finished. */
+const NEW_REPLY_IDLE_SECONDS = 0.6;
+
 /** @type {AudioContext|null} */
 let audioContext = null;
 
@@ -98,7 +104,18 @@ function playReplyAudio(base64Audio) {
     // Jitter buffer: if we underran (or this is the start of a reply), wait
     // a short moment so following chunks can arrive before playback catches up.
     const now = context.currentTime;
-    const startTime = nextStartTime < now ? now + PLAYBACK_LEAD_SECONDS : nextStartTime;
+    let startTime = nextStartTime;
+    if (nextStartTime < now) {
+      const idleSeconds = now - nextStartTime;
+      // Long silence = a new reply: buffer a little before starting.
+      // Short silence = mid-reply underrun: resume almost immediately,
+      // otherwise every late chunk would add an audible gap.
+      const isNewReply = nextStartTime === 0 || idleSeconds > NEW_REPLY_IDLE_SECONDS;
+      startTime = now + (isNewReply ? PLAYBACK_LEAD_SECONDS : UNDERRUN_LEAD_SECONDS);
+      if (!isNewReply) {
+        console.warn("[replyAudio] underrun, gap (ms):", Math.round(idleSeconds * 1000));
+      }
+    }
     source.start(startTime);
     nextStartTime = startTime + buffer.duration;
     queuedSources++;
