@@ -1,4 +1,4 @@
-﻿/**
+/**
  * voiceAudio.js — Browser ES module
  *
  * Step 7: Connects the microphone MediaStream (from microphone.js) to the
@@ -53,11 +53,32 @@ let frameCount = 0;
  */
 function pcmBufferToBase64(buffer) {
   const bytes = new Uint8Array(buffer);
+  const CHUNK = 0x8000;
   let binary = "";
-  for (let i = 0; i < bytes.byteLength; i++) {
-    binary += String.fromCharCode(bytes[i]);
+  for (let i = 0; i < bytes.byteLength; i += CHUNK) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
   }
   return btoa(binary);
+}
+
+/** Send ~40 ms per WebSocket message (960 samples at 24 kHz) instead of 128-sample frames. */
+const BATCH_SAMPLES = 960;
+
+/** @type {Int16Array[]} */
+let pendingFrames = [];
+let pendingSamples = 0;
+
+function flushPending() {
+  if (pendingSamples === 0) return;
+  const merged = new Int16Array(pendingSamples);
+  let offset = 0;
+  for (const frame of pendingFrames) {
+    merged.set(frame, offset);
+    offset += frame.length;
+  }
+  pendingFrames = [];
+  pendingSamples = 0;
+  sendAudio(pcmBufferToBase64(merged.buffer));
 }
 
 /**
@@ -114,8 +135,12 @@ async function startStreaming() {
       return;
     }
 
-    const base64 = pcmBufferToBase64(event.data);
-    sendAudio(base64);
+    const frame = new Int16Array(event.data);
+    pendingFrames.push(frame);
+    pendingSamples += frame.length;
+    if (pendingSamples >= BATCH_SAMPLES) {
+      flushPending();
+    }
 
     frameCount++;
     // Log once per 100 frames (~0.5 s at 24 kHz / 128 samples per frame)
@@ -132,6 +157,8 @@ async function startStreaming() {
   // (we have no need to play back the microphone audio locally).
   sourceNode.connect(workletNode);
 
+  pendingFrames = [];
+  pendingSamples = 0;
   streaming  = true;
   frameCount = 0;
   console.log("[voiceAudio] microphone streaming started");
@@ -147,6 +174,8 @@ function stopStreaming() {
   }
 
   streaming = false;
+  pendingFrames = [];
+  pendingSamples = 0;
 
   // Disconnect the audio graph
   if (sourceNode) {
