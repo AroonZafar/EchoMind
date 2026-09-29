@@ -82,8 +82,8 @@ export default function Home() {
     }
   };
 
-  const loadMemories = useCallback(async () => {
-    setLoading(true);
+  const loadMemories = useCallback(async (background = false) => {
+    if (!background) setLoading(true);
     try {
       const response = await fetch("/api/graph", { cache: "no-store" });
       const data = await response.json() as ApiGraph & { error?: string };
@@ -99,7 +99,7 @@ export default function Home() {
     }
   }, []);
 
-  useEffect(() => { void loadMemories(); }, [loadMemories, voice.rememberResponses.length]);
+  useEffect(() => { void loadMemories(voice.rememberResponses.length > 0); }, [loadMemories, voice.rememberResponses.length]);
 
   const searchMemories = async (event: React.FormEvent) => {
     event.preventDefault();
