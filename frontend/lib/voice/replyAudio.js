@@ -1,4 +1,4 @@
-﻿/**
+/**
  * replyAudio.js — Browser ES module
  *
  * Decodes and schedules AssemblyAI reply.audio PCM16 chunks for playback.
@@ -7,6 +7,9 @@
  */
 
 const SAMPLE_RATE = 24000;
+
+/** Small startup/rebuffer delay (seconds) to smooth out bursty network delivery. */
+const PLAYBACK_LEAD_SECONDS = 0.15;
 
 /** @type {AudioContext|null} */
 let audioContext = null;
@@ -92,7 +95,10 @@ function playReplyAudio(base64Audio) {
     source.buffer = buffer;
     source.connect(context.destination);
 
-    const startTime = Math.max(context.currentTime, nextStartTime);
+    // Jitter buffer: if we underran (or this is the start of a reply), wait
+    // a short moment so following chunks can arrive before playback catches up.
+    const now = context.currentTime;
+    const startTime = nextStartTime < now ? now + PLAYBACK_LEAD_SECONDS : nextStartTime;
     source.start(startTime);
     nextStartTime = startTime + buffer.duration;
     queuedSources++;
@@ -101,11 +107,6 @@ function playReplyAudio(base64Audio) {
       queuedSources = Math.max(0, queuedSources - 1);
       activeSources.delete(source);
     };
-    console.log("[replyAudio] PCM16 chunk scheduled", {
-      samples: buffer.length,
-      queued: queuedSources,
-      contextState: context.state,
-    });
     return true;
   } catch (error) {
     console.warn("[replyAudio] Could not schedule audio chunk:", error.message);
