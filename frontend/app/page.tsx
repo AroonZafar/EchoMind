@@ -68,10 +68,16 @@ export default function Home() {
         ? "error"
         : "idle";
 
+  const voiceActiveRef = useRef(false);
+  voiceActiveRef.current = voice.connectionState === "connecting" || voice.connectionState === "connected";
+
   const handleMic = () => {
     if (voice.isConnected) {
       voice.stop();
     } else {
+      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+      }
       void voice.start();
     }
   };
@@ -156,6 +162,7 @@ export default function Home() {
   const spokenSuggestions = useRef(new Set<string>());
   const speakSuggestion = (id: string, text: string) => {
     if (spokenSuggestions.current.has(id)) return;
+    if (voiceActiveRef.current) return;
     if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
     spokenSuggestions.current.add(id);
     window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
