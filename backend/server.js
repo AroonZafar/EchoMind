@@ -4,8 +4,8 @@ const express = require('express');
 const pool = require('./src/db/database');
 const memoryRepository = require('./src/repositories/memoryRepository');
 
-const PORT = 8000;
-const HOST = '127.0.0.1';
+const PORT = process.env.PORT || 8000;
+const HOST = '0.0.0.0';
 const app = express();
 
 app.use(express.json());
@@ -159,8 +159,6 @@ app.post('/api/memory/relation', async (req, res) => {
     });
   }
 });
-
-app.use(express.static(__dirname));
 
 app.listen(PORT, HOST, () => {
   console.log(`EchoMind server running at http://${HOST}:${PORT}`);
