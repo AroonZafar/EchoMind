@@ -13,6 +13,8 @@
  *   reply.audio        → forwarded as base64 data to the playback handler
  */
 
+import { isAudioPlaying } from "./replyAudio.js";
+
 const TOKEN_ENDPOINT = "/api/voice-token";
 const ASSEMBLYAI_WS_BASE = "wss://agents.assemblyai.com/v1/ws";
 
@@ -35,6 +37,16 @@ const SESSION_UPDATE = {
 
 /** @type {WebSocket|null} */
 let ws = null;
+
+/** Lightweight diagnostics: read in the browser console with window.__voiceDebug */
+function debug(type, data = {}) {
+  if (typeof window === "undefined") return;
+  (window.__voiceDebug = window.__voiceDebug || []).push({
+    t: Math.round(performance.now()),
+    type,
+    ...data,
+  });
+}
 
 /** Reply IDs that AssemblyAI has marked interrupted. */
 const interruptedReplyIds = new Set();
@@ -81,6 +93,7 @@ async function connect(handlers = {}) {
     throw new Error("Already connected. Call disconnect() first.");
   }
 
+  if (typeof window !== "undefined") window.__voiceDebug = [];
   const token = await fetchToken();
   const url = `${ASSEMBLYAI_WS_BASE}?token=${encodeURIComponent(token)}`;
 
@@ -118,6 +131,7 @@ async function connect(handlers = {}) {
       // transcript.user.delta — partial word(s) streamed while user is speaking
       if (msg.type === "transcript.user.delta") {
         const text = (msg.delta || "").trim();
+        debug("user_delta", { text, agentPlaying: isAudioPlaying() });
         if (text && handlers.onUserTranscript) {
           try {
             handlers.onUserTranscript({ text, isFinal: false });
@@ -131,6 +145,7 @@ async function connect(handlers = {}) {
       // transcript.user — final committed transcript for one user utterance
       if (msg.type === "transcript.user") {
         const text = (msg.text || "").trim();
+        debug("user_final", { text, agentPlaying: isAudioPlaying() });
         if (text && handlers.onUserTranscript) {
           try {
             handlers.onUserTranscript({ text, isFinal: true });
@@ -142,6 +157,7 @@ async function connect(handlers = {}) {
       }
 
       if (msg.type === "reply.started") {
+        debug("reply_started");
         console.log("[voiceAgent] agent reply started", msg);
         return;
       }
@@ -170,6 +186,7 @@ async function connect(handlers = {}) {
       }
 
       if (msg.type === "reply.done") {
+        debug("reply_done", { status: msg.status });
         console.log("[voiceAgent] agent reply done", msg);
         if (msg.status === "interrupted") {
           if (msg.reply_id) {
@@ -194,6 +211,7 @@ async function connect(handlers = {}) {
       if (msg.type === "session.error") {
         const errMsg = (msg.error && msg.error.message) || JSON.stringify(msg);
         console.error("[voiceAgent] session.error:", errMsg);
+        debug("session_error", { errMsg });
         if (handlers.onError) {
           handlers.onError(new Error(errMsg));
         }
@@ -212,6 +230,7 @@ async function connect(handlers = {}) {
 
     ws.onclose = (event) => {
       console.log(`[voiceAgent] WebSocket closed (code=${event.code})`);
+      debug("ws_closed", { code: event.code, reason: event.reason });
       if (handlers.onClose) {
         handlers.onClose(event);
       }
