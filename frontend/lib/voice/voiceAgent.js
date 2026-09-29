@@ -1,4 +1,4 @@
-﻿/**
+/**
  * voiceAgent.js — Browser ES module
  *
  * Manages the AssemblyAI Voice Agent WebSocket connection.
@@ -102,10 +102,12 @@ async function connect(handlers = {}) {
       }
 
       // Do not log reply.audio payloads because they contain base64 audio data.
-      if (msg.type === "reply.audio") {
-        console.log("[voiceAgent] event received: reply.audio");
-      } else {
-        console.log("[voiceAgent] event received:", msg.type, msg);
+      if (
+        msg.type !== "reply.audio" &&
+        msg.type !== "transcript.user.delta" &&
+        msg.type !== "transcript.agent.delta"
+      ) {
+        console.log("[voiceAgent] event received:", msg.type);
       }
 
       if (handlers.onMessage) {
