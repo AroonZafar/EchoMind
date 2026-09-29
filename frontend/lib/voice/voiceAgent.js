@@ -27,6 +27,17 @@ const SESSION_UPDATE = {
   session: {
     system_prompt: "You are EchoMind, a helpful personal memory assistant.",
     greeting: "Hello! EchoMind is ready.",
+    input: {
+      // Tuned so speaker echo / short noises / thinking pauses do not cut the
+      // agent off or end the user's turn too early. Tune these numbers if needed.
+      turn_detection: {
+        vad_threshold: 0.65,       // 0.0-1.0; higher = less sensitive to noise/echo
+        min_silence: 800,          // ms of silence before a confident end-of-turn
+        max_silence: 2000,         // ms of silence before forcing end-of-turn
+        interrupt_response: true,  // user can still barge in on purpose
+        interruption_delay: 600,   // ms the user must speak before it can interrupt
+      },
+    },
     output: {
       voice: "anna",
     },
