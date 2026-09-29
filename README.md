@@ -23,9 +23,27 @@ Turn natural conversations into **structured, connected memories** and retrieve 
 
 Instead of manually writing notes, users can speak naturally. EchoMind transcribes the conversation, extracts people, tasks, events, facts, and relationships, resolves relative dates, stores the memory, and makes it searchable through a connected memory graph.
 
-The goal is simple:
+### The idea
+
+Traditional memory tools usually require users to decide what is important before saving it.
+
+EchoMind reverses that workflow:
+
+```
+Speak naturally
+      ↓
+EchoMind understands the conversation
+      ↓
+Important information becomes structured memory
+      ↓
+Relationships connect the information
+      ↓
+Memory can be searched, visualized, or forgotten
+```
 
 > **Talk naturally. Let EchoMind remember the context.**
+
+---
 
 ## Core Features
 
@@ -42,25 +60,15 @@ The goal is simple:
 | **Persistent Storage** | Store structured memories with PostgreSQL and Neon |
 | **REST APIs** | Separate services for memory and AI processing |
 
-## Tech Stack
+---
 
-```text
-Frontend     → Next.js · React · TypeScript · Tailwind CSS
-Graph        → react-force-graph-2d
-Backend      → Node.js · Express
-Database     → PostgreSQL · Neon
-Voice        → AssemblyAI
-AI           → LLM-based structured memory extraction
-APIs         → REST
-Deployment   → Vercel · FastAPI Cloud
-```
-
-## Architecture
+## System Architecture
 
 ```mermaid
-flowchart LR
-    U[User Voice] --> V[AssemblyAI Voice Agent]
-    V --> T[Transcript]
+flowchart TB
+    U[User] --> V[Voice Interface]
+    V --> A[AssemblyAI Voice Agent]
+    A --> T[Live Transcript]
     T --> AI[AI Extraction Service]
     AI --> P[People]
     AI --> TK[Tasks]
@@ -77,9 +85,87 @@ flowchart LR
     M --> DB[(Neon PostgreSQL)]
     DB --> S[Memory Search]
     DB --> G[Memory Graph]
+    DB --> FR[Forget / Delete]
     S --> FE[Next.js Frontend]
     G --> FE
+    FR --> FE
+    FE --> C[Relevant Context]
+    C --> PR[Future / Proactive Actions]
 ```
+
+---
+
+## End-to-End Data Flow
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Frontend
+    participant AssemblyAI
+    participant AI as AI Service
+    participant Memory as Memory Service
+    participant DB as Neon PostgreSQL
+
+    User->>Frontend: Speak naturally
+    Frontend->>AssemblyAI: Voice stream
+    AssemblyAI-->>Frontend: Transcript
+    Frontend->>AI: Send transcript
+    AI->>AI: Extract entities
+    AI->>AI: Resolve dates and relationships
+    AI-->>Frontend: Structured memory
+    Frontend->>Memory: Store memory
+    Memory->>DB: Persist entities and relationships
+    DB-->>Memory: Stored
+    Memory-->>Frontend: Updated memory
+    Frontend-->>User: Memory / graph updated
+```
+
+---
+
+## Memory Architecture
+
+EchoMind does not treat every sentence as an isolated note.
+
+Instead, information can be represented as **entities + relationships + context**.
+
+```mermaid
+graph TD
+    M[Memory]
+    P[Person: Maya]
+    E[Event: Meeting]
+    T[Task: AI Assignment]
+    D[Date: Thursday]
+    C[Context: Conversation]
+
+    M --> P
+    M --> E
+    M --> T
+    M --> D
+    M --> C
+
+    E -->|with| P
+    E -->|about| T
+    E -->|scheduled_on| D
+    C -->|mentioned| P
+    C -->|contains| E
+```
+
+---
+
+## Tech Stack
+
+```
+Frontend     → Next.js · React · TypeScript · Tailwind CSS
+Graph        → react-force-graph-2d
+Backend      → Node.js · Express
+Database     → PostgreSQL · Neon
+Voice        → AssemblyAI
+AI           → LLM-based structured memory extraction
+APIs         → REST
+Deployment   → Vercel · FastAPI Cloud
+```
+
+---
 
 ## Project Structure
 
@@ -89,19 +175,23 @@ EchoMind/
 ├── frontend/             # Next.js frontend
 ├── src/                  # Voice / AI related source
 ├── schema.sql            # Database schema
-├── .env.example          # Environment configuration example
+├── .env.example          # Environment configuration
 ├── AGENTS.md             # Project guidance
 └── README.md
 ```
+
+---
 
 ## Requirements
 
 - Node.js 18+
 - npm
-- PostgreSQL database (Neon recommended)
+- PostgreSQL database, Neon recommended
 - AssemblyAI API access
 - Required AI service configuration
-- Environment variables configured for the frontend and backend
+- Environment variables configured for frontend and backend
+
+---
 
 ## Quick Start
 
@@ -132,115 +222,140 @@ npm install
 npm run dev
 ```
 
-Open:
+Open `http://localhost:3000`.
 
-```text
-http://localhost:3000
-```
-
-For local voice functionality, configure the required variables using the provided frontend environment example.
+---
 
 ## How It Works
 
-```text
-Voice Input
-     │
-     ▼
-AssemblyAI Voice Agent
-     │
-     ▼
-Live Transcript
-     │
-     ▼
-AI Memory Extraction
-     │
-     ├── People
-     ├── Tasks
-     ├── Events
-     ├── Facts
-     └── Relationships
-     │
-     ▼
-Relative Time Resolution
-     │
-     ▼
-Memory Service
-     │
-     ▼
-Neon PostgreSQL
-     │
-     ├── Memory Search
-     └── Memory Graph
-     │
-     ▼
-Next.js Frontend
+### Step 1 — Voice Capture
+The user speaks naturally through the EchoMind interface.
+
+### Step 2 — Speech-to-Text
+AssemblyAI converts the voice input into a live transcript.
+
+### Step 3 — AI Understanding
+The transcript is passed into the AI extraction layer.
+
+The AI identifies:
+
+- People
+- Tasks
+- Events
+- Facts
+- Relationships
+- Relevant time expressions
+
+### Step 4 — Validation
+The extraction layer validates generated information against the original transcript to reduce unsupported entities.
+
+### Step 5 — Time Resolution
+Conversational dates are normalized:
+
+```
+"tomorrow"       → Absolute calendar date
+"next Friday"    → Absolute calendar date
+"today at 11 AM" → Absolute date + time
 ```
 
-1. The user speaks naturally through the voice interface.
-2. AssemblyAI converts the speech into a live transcript.
-3. The AI extraction layer converts the transcript into structured memory.
-4. Relevant people, tasks, events, facts, and relationships are identified.
-5. Relative time expressions are resolved into usable dates and times.
-6. Structured memory is stored in PostgreSQL through the memory service.
-7. Users can search memories, inspect the graph, and forget selected memories.
-8. Stored context can later support proactive reminders and relevant suggestions.
+### Step 6 — Persistence
+Structured information is sent to the memory service and stored in PostgreSQL.
+
+### Step 7 — Graph Construction
+Relationships between entities are represented in the memory graph.
+
+### Step 8 — Retrieval
+Users can search memories or explore the graph to recover relevant context.
+
+### Step 9 — Forget
+When a memory is removed, the active memory state and graph are updated accordingly.
+
+---
 
 ## AI Memory Extraction
 
-EchoMind uses a structured extraction flow to turn conversational language into useful memory.
+EchoMind uses structured extraction rather than simply saving the raw transcript.
 
-For example:
+### Example Input
 
-```text
+```
 "I have a meeting with Maya tomorrow at 11 AM about the AI assignment."
 ```
 
-The system can extract:
+### Extracted Information
 
-```text
-Person  → Maya
-Event   → Meeting
-Time    → Tomorrow at 11 AM
-Topic   → AI Assignment
+```
+Person
+└── Maya
+
+Event
+└── Meeting
+
+Time
+└── Tomorrow at 11 AM
+
+Topic
+└── AI Assignment
 ```
 
-It can then represent the context as connected information:
+### Relationship Model
 
-```text
-Maya
- │
- └── Meeting
-       │
-       ├── Time → Absolute Date/Time
-       └── Topic → AI Assignment
+```mermaid
+graph LR
+    Maya[Person: Maya]
+    Meeting[Event: Meeting]
+    Time[Time: Absolute DateTime]
+    Task[Task: AI Assignment]
+
+    Meeting -->|with| Maya
+    Meeting -->|scheduled_at| Time
+    Meeting -->|about| Task
 ```
 
-The extraction pipeline also includes validation so names that are not supported by the transcript can be discarded, reducing unsupported graph entities.
+The system preserves **meaning and relationships**, not only the original sentence.
 
-## Relative Time Resolution
+---
 
-Natural conversations frequently use relative time:
+## Reliability & Safety Checks
 
-- "tomorrow"
-- "next Friday"
-- "today at 11 AM"
-- "in two days"
+| Check | Purpose |
+|---|---|
+| **Transcript Validation** | Prevent unsupported entities from becoming memories |
+| **Name Validation** | Reject names not supported by the transcript |
+| **Date Handling** | Convert relative time into usable absolute dates |
+| **Retry Logic** | Retry extraction when the first AI attempt fails |
+| **Raw Transcript Fallback** | Preserve the original transcript if structured extraction fails |
+| **Graph Consistency** | Keep the graph synchronized with memory changes |
 
-EchoMind resolves these expressions into absolute datetimes where possible so that extracted events and tasks can be used later for proactive context.
+---
 
-## Memory Management
+## Memory Search
 
-EchoMind is designed around persistent context while keeping memory under user control.
+```mermaid
+flowchart LR
+    Q[User Search Query] --> API[Memory Search API]
+    API --> DB[(PostgreSQL)]
+    DB --> R[Relevant Memories]
+    R --> UI[Search Results]
+    UI --> C[Context]
+```
 
-Users can:
+---
 
-- View remembered information
-- Search stored memories
-- Explore connected memory relationships
-- Select individual memories
-- Forget selected memories
+## Forget Flow
 
-The forget flow also updates the memory graph so removed information does not remain as an active memory node.
+Memory is useful only when users can control it.
+
+```mermaid
+flowchart LR
+    U[User Selects Memory] --> F[Forget Action]
+    F --> API[Forget API]
+    API --> DB[(PostgreSQL)]
+    DB --> G[Update Graph]
+    G --> UI[Updated Memory View]
+```
+
+---
 
 ## Deployment
 
@@ -251,6 +366,27 @@ The current project is split across three live services:
 | **Frontend** | Next.js application | [echo-mind-trfi.vercel.app](https://echo-mind-trfi.vercel.app/) |
 | **Memory Service** | Express memory and graph APIs | [echo-mind-blush-seven.vercel.app](https://echo-mind-blush-seven.vercel.app/) |
 | **AI Service** | AI extraction service | [echomind.fastapicloud.dev](https://echomind.fastapicloud.dev/) |
+
+### Production Architecture
+
+```mermaid
+flowchart TB
+    User[User Browser]
+    Vercel[Next.js on Vercel]
+    AI[AI Service]
+    Memory[Memory Service]
+    Neon[(Neon PostgreSQL)]
+
+    User --> Vercel
+    Vercel --> AI
+    Vercel --> Memory
+    AI --> Memory
+    Memory --> Neon
+    Neon --> Memory
+    Memory --> Vercel
+```
+
+---
 
 ## Development Checks
 
@@ -270,34 +406,33 @@ npm install
 npm start
 ```
 
-## Project Flow
+---
 
-```text
-User Speech
-     │
-     ▼
-Transcript
-     │
-     ▼
-AI Understanding
-     │
-     ▼
-Structured Memory
-     │
-     ▼
-Relationships
-     │
-     ▼
-PostgreSQL
-     │
-     ├───────────────┐
-     ▼               ▼
-Search            Graph
-     │               │
-     └───────┬───────┘
-             ▼
-       Relevant Context
+## Complete Project Flow
+
+```mermaid
+flowchart TD
+    A[User Speaks] --> B[AssemblyAI]
+    B --> C[Transcript]
+    C --> D[AI Extraction]
+    D --> E{Valid Memory?}
+    E -->|Yes| F[Structured Entities]
+    E -->|Retry| D
+    E -->|Failed| R[Store Raw Transcript]
+    F --> G[Resolve Relative Time]
+    G --> H[Create Relationships]
+    H --> I[Memory Service]
+    I --> J[(Neon PostgreSQL)]
+    J --> K[Memory Search]
+    J --> L[Memory Graph]
+    K --> M[Next.js UI]
+    L --> M
+    R --> M
+    M --> N[User Context]
+    N --> O[Future Proactive Actions]
 ```
+
+---
 
 ## Roadmap
 
@@ -316,6 +451,8 @@ Search            Graph
 - [ ] Expanded graph relationship types
 - [ ] Personal memory analytics
 
+---
+
 ## Project Links
 
 - **Repository:** [Eman2123/EchoMind](https://github.com/Eman2123/EchoMind)
@@ -323,12 +460,16 @@ Search            Graph
 - **Memory Service:** [echo-mind-blush-seven.vercel.app](https://echo-mind-blush-seven.vercel.app/)
 - **AI Service:** [echomind.fastapicloud.dev](https://echomind.fastapicloud.dev/)
 
+---
+
 ## Team
 
 - **Eman Mirza**
 - **Aroonzz**
 - **Felix**
 - **Rabeesa**
+
+---
 
 ## License
 
