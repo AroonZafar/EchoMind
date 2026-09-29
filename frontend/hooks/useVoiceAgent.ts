@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { connect, disconnect, isConnected } from "@/lib/voice/voiceAgent.js";
@@ -82,7 +82,13 @@ export function useVoiceAgent() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ transcript: trimmedText }),
       });
-      const responseBody = await response.json();
+      const responseText = await response.text();
+      let responseBody: { error?: string; detail?: string } & Partial<RememberResponse> = {};
+      try {
+        responseBody = JSON.parse(responseText);
+      } catch {
+        throw new Error(`Memory service returned an invalid response (HTTP ${response.status}).`);
+      }
 
       if (!response.ok) {
         throw new Error(responseBody.error ?? responseBody.detail ?? "Could not save memory.");
