@@ -82,14 +82,21 @@ export default function Home() {
     }
   };
 
+  const lastGraphSignature = useRef("");
   const loadMemories = useCallback(async (background = false) => {
     if (!background) setLoading(true);
     try {
       const response = await fetch("/api/graph", { cache: "no-store" });
       const data = await response.json() as ApiGraph & { error?: string };
       if (!response.ok) throw new Error(data.error || "Could not load memories.");
-      setGraph(toGraph(data));
-      setMemories(data.nodes);
+      // Skip state updates when nothing changed, so the graph is not re-created
+      // and its force simulation is not re-heated (which janks audio playback).
+      const signature = JSON.stringify(data);
+      if (signature !== lastGraphSignature.current) {
+        lastGraphSignature.current = signature;
+        setGraph(toGraph(data));
+        setMemories(data.nodes);
+      }
       return true;
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Could not load memories.");
