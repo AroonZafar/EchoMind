@@ -21,12 +21,21 @@ export async function proxyRequest(
       cache: "no-store",
     });
     const body = await response.text();
+    const upstreamType = response.headers.get("content-type") ?? "";
+
+    if (!upstreamType.includes("json")) {
+      console.error(`API proxy got non-JSON response from ${target} (HTTP ${response.status})`);
+      return NextResponse.json(
+        {
+          error: `Backend returned a non-JSON response (HTTP ${response.status}) for ${path}. Check that the service at ${baseUrl} is running.`,
+        },
+        { status: response.ok ? 502 : response.status },
+      );
+    }
 
     return new NextResponse(body, {
       status: response.status,
-      headers: {
-        "Content-Type": response.headers.get("content-type") ?? "application/json",
-      },
+      headers: { "Content-Type": upstreamType },
     });
   } catch (error) {
     console.error(`API proxy failed for ${path}:`, error);
