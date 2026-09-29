@@ -68,16 +68,22 @@ export default function Home() {
         ? "error"
         : "idle";
 
+  const voiceActiveRef = useRef(false);
+  voiceActiveRef.current = voice.connectionState === "connecting" || voice.connectionState === "connected";
+
   const handleMic = () => {
     if (voice.isConnected) {
       voice.stop();
     } else {
+      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+      }
       void voice.start();
     }
   };
 
-  const loadMemories = useCallback(async () => {
-    setLoading(true);
+  const loadMemories = useCallback(async (background = false) => {
+    if (!background) setLoading(true);
     try {
       const response = await fetch("/api/graph", { cache: "no-store" });
       const data = await response.json() as ApiGraph & { error?: string };
@@ -93,7 +99,7 @@ export default function Home() {
     }
   }, []);
 
-  useEffect(() => { void loadMemories(); }, [loadMemories, voice.rememberResponses.length]);
+  useEffect(() => { void loadMemories(voice.rememberResponses.length > 0); }, [loadMemories, voice.rememberResponses.length]);
 
   const searchMemories = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -156,6 +162,7 @@ export default function Home() {
   const spokenSuggestions = useRef(new Set<string>());
   const speakSuggestion = (id: string, text: string) => {
     if (spokenSuggestions.current.has(id)) return;
+    if (voiceActiveRef.current) return;
     if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
     spokenSuggestions.current.add(id);
     window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
