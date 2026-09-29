@@ -9,7 +9,7 @@
 const SAMPLE_RATE = 24000;
 
 /** Small startup/rebuffer delay (seconds) to smooth out bursty network delivery. */
-const PLAYBACK_LEAD_SECONDS = 0.15;
+const PLAYBACK_LEAD_SECONDS = 0.25;
 
 /** Tiny restart delay after a mid-reply underrun. */
 const UNDERRUN_LEAD_SECONDS = 0.02;
