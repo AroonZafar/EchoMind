@@ -114,6 +114,13 @@ function playReplyAudio(base64Audio) {
       startTime = now + (isNewReply ? PLAYBACK_LEAD_SECONDS : UNDERRUN_LEAD_SECONDS);
       if (!isNewReply) {
         console.warn("[replyAudio] underrun, gap (ms):", Math.round(idleSeconds * 1000));
+        if (typeof window !== "undefined") {
+          (window.__voiceDebug = window.__voiceDebug || []).push({
+            t: Math.round(performance.now()),
+            type: "underrun",
+            gapMs: Math.round(idleSeconds * 1000),
+          });
+        }
       }
     }
     source.start(startTime);
