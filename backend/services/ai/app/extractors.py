@@ -6,8 +6,13 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # Load AI service environment variables
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
-load_dotenv(Path(__file__).resolve().parents[4] / ".env")
+_HERE = Path(__file__).resolve()
+load_dotenv(_HERE.parent.parent / ".env")
+# Repo-root .env only exists in the full checkout (backend/services/ai/app/...).
+# When the service is deployed on its own (e.g. /app/app/extractors.py) there
+# is no 4th parent, and indexing it used to crash the app at startup.
+if len(_HERE.parents) > 4:
+    load_dotenv(_HERE.parents[4] / ".env")
 from app.models import ExtractedMemory, MemoryEntity, Relationship
 from app.store import upsert_memory, add_relation, is_in_cooldown, record_suggestion
 
@@ -29,13 +34,22 @@ def _load_prompt(filename: str) -> str:
 EXTRACTION_PROMPT_TEMPLATE = _load_prompt("extraction_prompt.md")
 EXTRACTION_RETRY_REMINDER = _load_prompt("extraction_retry_reminder.md")
 
+_DECODER = json.JSONDecoder()
 
-async def _call_llm_for_extraction(prompt: str) -> str:
+
+class LLMTimeout(ValueError):
+    """The LLM call timed out. Retrying a slow API just doubles the wait, so
+    the caller falls back to a raw memory immediately."""
+
+
+async def _call_llm_for_extraction(prompt: str, json_mode: bool = True) -> str:
     """Single call to the LLM, returns raw response text. Raises ValueError
-    on transport/API failure -- including a timeout, which httpx raises as
-    httpx.TimeoutException, not ValueError, so we normalize it here -- so
-    the caller has one exception type to handle when deciding whether to
-    retry."""
+    on transport/API failure (LLMTimeout for timeouts) so the caller has one
+    exception family to handle when deciding whether to retry.
+
+    json_mode asks the API for a guaranteed-JSON response. It is only used on
+    the first attempt: if the provider rejects it, the retry (json_mode=False)
+    still works."""
     if not AIML_API_KEY:
         raise ValueError("AIML_API_KEY not set")
 
@@ -49,41 +63,78 @@ async def _call_llm_for_extraction(prompt: str) -> str:
         "temperature": 0,
         "max_tokens": 1500
     }
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
 
     try:
         async with httpx.AsyncClient(timeout=12.0) as client:
             response = await client.post(AIML_API_URL, json=payload, headers=headers)
-            data = response.json()
+    except httpx.TimeoutException as e:
+        raise LLMTimeout(f"AIML API request timed out: {e}")
     except httpx.HTTPError as e:
-        # Timeout, connection error, etc. -- treat exactly like a failed
-        # call so the retry-once-then-fallback flow in
-        # extract_memory_from_speech handles it uniformly.
         raise ValueError(f"AIML API request failed: {e}")
 
-    if response.status_code != 200 or "choices" not in data:
-        error_detail = data.get("error", data)
+    # The provider can answer with an HTML error page (502/503/cold start);
+    # response.json() would then raise a confusing JSONDecodeError.
+    try:
+        data = response.json()
+    except ValueError:
+        raise ValueError(
+            f"AIML API returned non-JSON body (status {response.status_code}): {response.text[:200]!r}"
+        )
+
+    if response.status_code != 200 or not isinstance(data, dict) or "choices" not in data:
+        error_detail = data.get("error", data) if isinstance(data, dict) else data
         raise ValueError(f"AIML API request failed (status {response.status_code}): {error_detail}")
 
-    return data["choices"][0]["message"]["content"]
+    return data["choices"][0]["message"]["content"] or ""
 
 
 def _parse_extraction_json(response_text: str) -> dict:
-    """Raises json.JSONDecodeError / ValueError if the response isn't
-    parseable JSON. Caller decides what to do about it."""
-    json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-    if not json_match:
+    """Find the first JSON object in the reply and decode exactly that object.
+    Unlike a greedy `\\{.*\\}` regex this survives code fences, leading or
+    trailing commentary, and a second {...} later in the text.
+    Raises ValueError (incl. json.JSONDecodeError) if nothing parseable."""
+    text = (response_text or "").strip()
+    start = text.find("{")
+    if start == -1:
         raise ValueError(f"Could not find JSON in AIML API response: {response_text!r}")
-    return json.loads(json_match.group())
+    obj, _ = _DECODER.raw_decode(text[start:])
+    if not isinstance(obj, dict):
+        raise ValueError(f"Expected a JSON object, got {type(obj).__name__}")
+    return obj
+
+
+def _coerce_importance(value) -> int:
+    """LLMs return 7, 7.5, "7", 0.8 or null. The model field is an int 1-10."""
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return 5
+    if 0 < n <= 1:
+        n = n * 10
+    return max(1, min(10, int(round(n))))
 
 
 def _build_extracted_memory(result: dict, transcript: str) -> ExtractedMemory:
+    entities_raw = result.get("entities")
+    relationships_raw = result.get("relationships")
+    if not isinstance(entities_raw, list):
+        entities_raw = []
+    if not isinstance(relationships_raw, list):
+        relationships_raw = []
+
     # Extract entities
     entities = []
-    for e in result.get("entities", []):
+    for e in entities_raw:
         if not isinstance(e, dict):
             continue
         name = e.get("name") or e.get("value") or e.get("entity")
         etype = e.get("type") or e.get("category") or "unknown"
+        if not name:
+            continue
+        name = str(name).strip()
+        etype = str(etype).strip() or "unknown"
         if not name:
             continue
 
@@ -91,24 +142,19 @@ def _build_extracted_memory(result: dict, transcript: str) -> ExtractedMemory:
         if etype.lower() == "person" and name.lower() not in transcript.lower():
             continue
 
-        entities.append(MemoryEntity(
-            type=etype,
-            name=name,
-            attributes=e.get("attributes", {}) or {}
-        ))
+        attrs = e.get("attributes")
+        if not isinstance(attrs, dict):
+            attrs = {}
 
-    # Build the set of valid relationship endpoints: every extracted entity
-    # name (lowercased) plus first-person pronouns. Anything else (most
-    # commonly a bare date/day/time the model pulled into a relationship
-    # instead of leaving it in attributes.due/attributes.when) is a stray
-    # string, not a real node, and must not be allowed through as a
-    # relationship endpoint -- even for the extract-only endpoint, which has
-    # no downstream filtering of its own.
+        entities.append(MemoryEntity(type=etype, name=name, attributes=attrs))
+
+    # Valid relationship endpoints: every extracted entity name (lowercased)
+    # plus first-person pronouns. Anything else (most commonly a bare
+    # date/day/time) is a stray string, not a real node.
     valid_endpoints = {ent.name.lower() for ent in entities} | FIRST_PERSON
 
-    # Extract relationships
     relationships = []
-    for r in result.get("relationships", []):
+    for r in relationships_raw:
         if not isinstance(r, dict):
             continue
         source = r.get("source") or r.get("from") or r.get("subject")
@@ -116,28 +162,24 @@ def _build_extracted_memory(result: dict, transcript: str) -> ExtractedMemory:
         relation = r.get("relation") or r.get("relationship") or r.get("type") or "related_to"
         if not source or not target:
             continue
+        source, target, relation = str(source), str(target), str(relation)
         if source.lower() not in valid_endpoints or target.lower() not in valid_endpoints:
-            # Skip relations pointing at something that isn't a real
-            # entity (e.g. "Friday", "Thursday") instead of letting them
-            # through for the caller to turn into junk nodes.
             continue
         relationships.append(Relationship(source=source, target=target, relation=relation))
 
     return ExtractedMemory(
         entities=entities,
         relationships=relationships,
-        importance=result.get("importance", 7),
-        memory_type=result.get("memory_type", "fact"),
-        summary=result.get("summary", "")
+        importance=_coerce_importance(result.get("importance", 7)),
+        memory_type=str(result.get("memory_type") or "fact"),
+        summary=str(result.get("summary") or "")
     )
 
 
 def _raw_fallback_memory(transcript: str) -> ExtractedMemory:
-    """Used when extraction fails twice in a row (bad JSON both times, or
-    the LLM call itself errors on retry). Per the prompt-engineering doc
-    (§14): never silently drop the utterance -- store it as an unlinked
-    raw memory instead so nothing the user said is lost, even if it
-    couldn't be structured."""
+    """Used when extraction fails (timeout, bad JSON twice, invalid shape).
+    Per the prompt-engineering doc (§14): never silently drop the utterance --
+    store it as an unlinked raw memory instead."""
     return ExtractedMemory(
         entities=[],
         relationships=[],
@@ -150,44 +192,45 @@ def _raw_fallback_memory(transcript: str) -> ExtractedMemory:
 async def extract_memory_from_speech(transcript: str) -> ExtractedMemory:
     """Extract memory from speech and return structured data.
 
-    Retry policy: one retry with a stricter "JSON only" reminder if the
-    first response can't be parsed as JSON. If the retry also fails (bad
-    JSON again, or the API call itself errors), fall back to an unlinked
-    raw memory rather than raising -- callers should not lose the
-    transcript just because extraction had a bad run.
+    Policy:
+      - timeout            -> raw fallback immediately (retrying doubles the wait)
+      - bad JSON / API err -> one retry with stricter reminder, no json_mode
+      - second failure     -> raw fallback
+      - JSON parsed but wrong shape (pydantic error) -> raw fallback, never a 400
     """
     prompt = EXTRACTION_PROMPT_TEMPLATE.format(transcript=transcript)
 
+    result = None
     try:
-        response_text = await _call_llm_for_extraction(prompt)
+        response_text = await _call_llm_for_extraction(prompt, json_mode=True)
         result = _parse_extraction_json(response_text)
+    except LLMTimeout:
+        return _raw_fallback_memory(transcript)
     except ValueError as e:
         # No AIML_API_KEY configured is a config error, not a
-        # transient/malformed-output issue -- don't mask it with a
-        # fallback, the service is genuinely misconfigured.
+        # transient/malformed-output issue -- don't mask it with a fallback.
         if "AIML_API_KEY not set" in str(e):
             raise
         result = None
-    except json.JSONDecodeError:
-        result = None
 
     if result is None:
-        # Retry once with a stricter reminder appended.
         retry_prompt = prompt + "\n\n" + EXTRACTION_RETRY_REMINDER
         try:
-            response_text = await _call_llm_for_extraction(retry_prompt)
+            response_text = await _call_llm_for_extraction(retry_prompt, json_mode=False)
             result = _parse_extraction_json(response_text)
-        except (ValueError, json.JSONDecodeError):
-            # Second failure -- store as unlinked raw memory instead of
-            # dropping the utterance or raising a 400 to the caller.
+        except ValueError:
             return _raw_fallback_memory(transcript)
 
-    return _build_extracted_memory(result, transcript)
+    try:
+        return _build_extracted_memory(result, transcript)
+    except (ValueError, TypeError, AttributeError) as e:
+        # pydantic.ValidationError is a ValueError subclass in pydantic v2.
+        print(f"[extract] invalid extraction shape, falling back to raw memory: {e}")
+        return _raw_fallback_memory(transcript)
 
 
 async def extract_and_save_memory(transcript: str) -> dict:
     """Extract memory AND save to database"""
-    # Extract from speech
     extracted = await extract_memory_from_speech(transcript)
 
     saved_memories = []
@@ -210,11 +253,10 @@ async def extract_and_save_memory(transcript: str) -> dict:
             "extracted": extracted,
             "saved_memories": saved_memories,
             "saved_relations": saved_relations,
-            "message": "Extraction failed twice; stored as unlinked raw memory."
+            "message": "Extraction failed; stored as unlinked raw memory."
         }
 
-    # Save entities as memories
-    entity_id_map = {}  # Map entity name to memory ID for relations
+    entity_id_map = {}
     for entity in extracted.entities:
         try:
             memory = upsert_memory(
@@ -233,7 +275,6 @@ async def extract_and_save_memory(transcript: str) -> dict:
         except Exception as e:
             print(f"Error saving entity {entity.name}: {e}")
 
-    # Save relationships
     for rel in extracted.relationships:
         try:
             source_id = entity_id_map.get(rel.source)
