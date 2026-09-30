@@ -173,20 +173,25 @@ async def check_relevance(req: RelevanceCheckRequest):
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
-@router.post("/suggestions/confirm")
-async def confirm_suggestion(req: SuggestionActionRequest):
-    ok = await asyncio.to_thread(store.update_suggestion_status, req.suggestion_id, "accepted")
+async def _set_suggestion_status(suggestion_id: str, status: str) -> dict:
+    """Shared by confirm/dismiss. Always fails with a JSON error, never plain text."""
+    try:
+        ok = await asyncio.to_thread(store.update_suggestion_status, suggestion_id, status)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
     if not ok:
         raise HTTPException(status_code=404, detail="Suggestion not found")
-    return {"status": "accepted"}
+    return {"status": status}
+
+
+@router.post("/suggestions/confirm")
+async def confirm_suggestion(req: SuggestionActionRequest):
+    return await _set_suggestion_status(req.suggestion_id, "accepted")
 
 
 @router.post("/suggestions/dismiss")
 async def dismiss_suggestion(req: SuggestionActionRequest):
-    ok = await asyncio.to_thread(store.update_suggestion_status, req.suggestion_id, "dismissed")
-    if not ok:
-        raise HTTPException(status_code=404, detail="Suggestion not found")
-    return {"status": "dismissed"}
+    return await _set_suggestion_status(req.suggestion_id, "dismissed")
 
 
 @router.post("/forget")
