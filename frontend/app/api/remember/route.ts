@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60; // allow slow cold starts on serverless hosts
 
 export async function POST(request: NextRequest) {
   let body: { transcript?: unknown };
@@ -27,7 +28,7 @@ export async function POST(request: NextRequest) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ transcript: body.transcript }),
       cache: "no-store",
-      signal: AbortSignal.timeout(30000), // fail fast instead of waiting for a 524
+      signal: AbortSignal.timeout(45000), // fail fast instead of waiting for a 524
     });
     const responseBody = await response.text();
     const upstreamType = response.headers.get("content-type") ?? "";
