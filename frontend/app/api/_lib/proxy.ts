@@ -19,6 +19,7 @@ export async function proxyRequest(
       headers,
       body: request.method === "GET" || request.method === "HEAD" ? undefined : await request.text(),
       cache: "no-store",
+      signal: AbortSignal.timeout(30000),
     });
     const body = await response.text();
     const upstreamType = response.headers.get("content-type") ?? "";
@@ -39,6 +40,9 @@ export async function proxyRequest(
     });
   } catch (error) {
     console.error(`API proxy failed for ${path}:`, error);
+    if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
+      return NextResponse.json({ error: "Backend service timed out. Please try again." }, { status: 504 });
+    }
     return NextResponse.json({ error: "Backend service unavailable." }, { status: 502 });
   }
 }
