@@ -231,13 +231,29 @@ export default function Home() {
 
   const updateSuggestion = async (path: string) => {
     if (!suggestion) return;
-    const response = await fetch(path, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ suggestion_id: suggestion.id }),
-    });
-    if (!response.ok) { setStatus("Suggestion update failed."); return; }
-    setSuggestion(null);
+    setStatus("");
+    setControlsNote("");
+    try {
+      const response = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ suggestion_id: suggestion.id }),
+      });
+      if (!response.ok) {
+        let detail = "";
+        try {
+          const data = await response.json() as { error?: string; detail?: string };
+          detail = data.error || data.detail || "";
+        } catch {
+          // Non-JSON error body (for example an HTML error page).
+        }
+        setStatus(`Suggestion update failed (HTTP ${response.status})${detail ? `: ${detail}` : ""}.`);
+        return;
+      }
+      setSuggestion(null);
+    } catch {
+      setStatus("Suggestion update failed: could not reach the server.");
+    }
   };
 
   return <main className="ambient min-h-screen">
