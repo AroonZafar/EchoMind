@@ -12,8 +12,15 @@ SUGGESTION_COOLDOWN_MINUTES = 60
 
 def get_conn():
     """Get PostgreSQL connection"""
-    conn = psycopg2.connect(DATABASE_URL)
+    # connect_timeout is a client-side libpq setting, so it works through
+    # Neon's pooled (PgBouncer) endpoint. Do NOT pass `options=` here: the
+    # pooler rejects startup parameters like statement_timeout.
+    conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
     conn.autocommit = False
+    # SET LOCAL is applied inside the transaction, which is pooler-safe.
+    # It lasts until the next commit/rollback, then resets.
+    with conn.cursor() as cur:
+        cur.execute("SET LOCAL statement_timeout = 15000")
     return conn
 
 
