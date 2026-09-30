@@ -111,7 +111,7 @@ def _unresolved(memory: dict) -> float:
     return 1.0 if memory.get("status") == "active" else 0.0
 
 
-def _recent_repeat_penalty(memory: dict, force: bool = False) -> float:
+def _recent_repeat_penalty(memory: dict, force: bool = False, in_cooldown: bool = False) -> float:
     """Penalize a memory that's still within its cooldown window -- but
     only while it's actually still in cooldown, not forever after the
     first time it was ever suggested. (Previously this checked "was
@@ -122,10 +122,12 @@ def _recent_repeat_penalty(memory: dict, force: bool = False) -> float:
     entirely, matching the cooldown-skip behavior above."""
     if force:
         return 0.0
-    return 1.0 if store.is_in_cooldown(memory["id"]) else 0.0
+    # in_cooldown is passed in by the caller (already known from one batched
+    # query) instead of hitting the database again for every memory.
+    return 1.0 if in_cooldown else 0.0
 
 
-def compute_relevance(memory: dict, context_text: str = "", force: bool = False) -> dict:
+def compute_relevance(memory: dict, context_text: str = "", force: bool = False, in_cooldown: bool = False) -> dict:
     # Scoring formula stays deterministic on purpose (fast, and immune to
     # the LLM being slow/down) -- only the suggestion's spoken phrasing
     # below is LLM-generated. See doc §35: don't over-engineer the
@@ -134,7 +136,7 @@ def compute_relevance(memory: dict, context_text: str = "", force: bool = False)
     time_relevance = _time_relevance(memory)
     importance = _importance(memory)
     unresolved = _unresolved(memory)
-    recent_repeat = _recent_repeat_penalty(memory, force=force)
+    recent_repeat = _recent_repeat_penalty(memory, force=force, in_cooldown=in_cooldown)
 
     score = (
         0.30 * context_match
@@ -230,8 +232,12 @@ async def check_relevance(context_text: str = "", force: bool = False):
     memories = [m for m in all_memories if m.get("status") == "active"]
     triggered = []
 
+    # One query for every memory still cooling down, instead of 1-2 queries
+    # per memory (each one a network round trip to the remote DB).
+    cooling = set() if force else await asyncio.to_thread(store.get_cooldown_memory_ids)
+
     for memory in memories:
-        if not force and await asyncio.to_thread(store.is_in_cooldown, memory["id"]):
+        if str(memory["id"]) in cooling:
             continue
 
         scored = await asyncio.to_thread(compute_relevance, memory, context_text, force=force)
