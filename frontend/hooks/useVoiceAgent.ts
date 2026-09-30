@@ -51,6 +51,9 @@ export function useVoiceAgent() {
   const userDraftRef = useRef("");
   const agentDraftRef = useRef("");
   const lastFinalUserTranscriptRef = useRef<string | null>(null);
+  // Memory saves run one at a time so slow responses never pile up and
+  // overload the backend; the voice conversation never waits on them.
+  const rememberQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   const appendTurn = useCallback((speaker: VoiceTurn["speaker"], text: string) => {
     const trimmed = text.trim();
@@ -76,7 +79,7 @@ export function useVoiceAgent() {
     setUserDraft("");
     appendTurn("user", trimmedText);
 
-    try {
+    const saveMemory = async () => {
       const response = await fetch("/api/remember", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -91,14 +94,33 @@ export function useVoiceAgent() {
       }
 
       if (!response.ok) {
-        throw new Error(responseBody.error ?? responseBody.detail ?? "Could not save memory.");
+        const failure = new Error(responseBody.error ?? responseBody.detail ?? "Could not save memory.") as Error & { status?: number };
+        failure.status = response.status;
+        throw failure;
       }
 
       setRememberResponses((current) => [...current, responseBody as RememberResponse]);
-    } catch (rememberError) {
-      const message = rememberError instanceof Error ? rememberError.message : "Could not save memory.";
-      setError(message);
-    }
+    };
+
+    rememberQueueRef.current = rememberQueueRef.current.then(async () => {
+      try {
+        await saveMemory();
+      } catch (firstError) {
+        // A timeout means the backend is already busy with this request;
+        // retrying would only double the load, so surface it instead.
+        const status = (firstError as { status?: number }).status;
+        if (status === 504) {
+          setError(firstError instanceof Error ? firstError.message : "Could not save memory.");
+          return;
+        }
+        try {
+          await saveMemory(); // one retry: the first call often just wakes the service
+        } catch (rememberError) {
+          const message = rememberError instanceof Error ? rememberError.message : "Could not save memory.";
+          setError(message);
+        }
+      }
+    });
   }, [appendTurn]);
 
   const handleAgentResponse = useCallback(({ text, isFinal }: { text: string; isFinal: boolean }) => {
