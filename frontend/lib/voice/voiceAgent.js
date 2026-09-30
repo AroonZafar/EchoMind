@@ -1,232 +1,274 @@
 /**
- * voiceAudio.js — Browser ES module
+ * voiceAgent.js — Browser ES module
  *
- * Step 7: Connects the microphone MediaStream (from microphone.js) to the
- * AssemblyAI Voice Agent WebSocket (via voiceAgent.sendAudio).
- *
- * Pipeline:
- *   MediaStream  →  AudioContext (24 kHz)  →  MediaStreamSourceNode
- *     →  AudioWorkletNode (pcm-processor)  →  base64 encode
- *       →  sendAudio(base64)  →  WebSocket  →  AssemblyAI
- *
- * Audio format: PCM16 · mono · 24 kHz (required by AssemblyAI Voice Agent)
- *
- * Guards:
- *   - Audio is only sent AFTER session.ready (caller must call startStreaming
- *     from the onSessionReady handler or pass sessionReady=true).
- *   - Audio is not sent if the WebSocket is not open.
- *   - Streaming stops cleanly when stopStreaming() is called.
+ * Manages the AssemblyAI Voice Agent WebSocket connection.
+ * The permanent API key NEVER appears here — it stays server-side in .env.
+ * This module only uses the short-lived token returned by the local token server.
  *
  * Public API:
- *   startStreaming(stream)  → Promise<void>
- *   stopStreaming()         → void
- *   isStreaming()           → boolean
+ *   connect(handlers)  → Promise<sessionReadyPayload>
+ *   disconnect()       → void
+ *   isConnected()      → boolean
+ *   sendAudio(base64)  → void   (Step 7 — sends input.audio; no-op if not ready)
+ *   reply.audio        → forwarded as base64 data to the playback handler
  */
 
-import { sendAudio, isConnected } from "./voiceAgent.js";
-import { getMicrophoneStream }    from "./microphone.js";
-import { isAudioPlaying }         from "./replyAudio.js";
+import { isAudioPlaying } from "./replyAudio.js";
 
-/** Path to the AudioWorklet processor module — served by the static server */
-const PROCESSOR_URL = "/voice/pcm-processor.js";
-
-/** @type {AudioContext|null} */
-let audioCtx = null;
-
-/** @type {AudioWorkletNode|null} */
-let workletNode = null;
-
-/** @type {MediaStreamAudioSourceNode|null} */
-let sourceNode = null;
-
-/** @type {boolean} */
-let streaming = false;
-
-/** Frame counter — used only for infrequent logging (every 100 frames) */
-let frameCount = 0;
+const TOKEN_ENDPOINT = "/api/voice-token";
+const ASSEMBLYAI_WS_BASE = "wss://agents.assemblyai.com/v1/ws";
 
 /**
- * Convert an ArrayBuffer of Int16 PCM samples to a base64 string.
- * Uses Uint8Array view over the same buffer — no copy needed.
+ * Minimal session configuration sent to AssemblyAI immediately after the
+ * WebSocket opens. AssemblyAI requires this before it will emit session.ready.
+ * Only the fields needed to establish a valid session are included here;
+ * future steps (persona, tools, etc.) will extend this object.
+ */
+const SESSION_UPDATE = {
+  type: "session.update",
+  session: {
+    system_prompt: "You are EchoMind, a helpful personal memory assistant.",
+    greeting: "Hello! EchoMind is ready.",
+    output: {
+      voice: "anna",
+    },
+  },
+};
+
+/** @type {WebSocket|null} */
+let ws = null;
+
+/** Lightweight diagnostics: read in the browser console with window.__voiceDebug */
+function debug(type, data = {}) {
+  if (typeof window === "undefined") return;
+  (window.__voiceDebug = window.__voiceDebug || []).push({
+    t: Math.round(performance.now()),
+    type,
+    ...data,
+  });
+}
+
+/** Reply IDs that AssemblyAI has marked interrupted. */
+const interruptedReplyIds = new Set();
+
+/**
+ * Fetch a short-lived token from the local token server.
+ * @returns {Promise<string>} temporary token
+ */
+async function fetchToken() {
+  const response = await fetch(TOKEN_ENDPOINT);
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Token request failed (${response.status}): ${body}`);
+  }
+  const data = await response.json();
+  if (!data.token) {
+    throw new Error("Token response did not contain a token field");
+  }
+  return data.token;
+}
+
+/**
+ * Connect to the AssemblyAI Voice Agent WebSocket.
  *
- * @param {ArrayBuffer} buffer
- * @returns {string} base64-encoded bytes
- */
-function pcmBufferToBase64(buffer) {
-  const bytes = new Uint8Array(buffer);
-  const CHUNK = 0x8000;
-  let binary = "";
-  for (let i = 0; i < bytes.byteLength; i += CHUNK) {
-    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
-  }
-  return btoa(binary);
-}
-
-/** Send ~40 ms per WebSocket message (960 samples at 24 kHz) instead of 128-sample frames. */
-const BATCH_SAMPLES = 960;
-
-/**
- * Half-duplex mode: while the agent's reply is playing (plus a short tail),
- * send silence instead of the real microphone signal. Without this the
- * speakers leak into the mic, the server thinks the user started talking,
- * marks the reply "interrupted", and the client throws the rest of the
- * audio away -- which is heard as the voice cutting out.
- * Set to false to allow barge-in (interrupting the agent), e.g. when the
- * user wears headphones.
- */
-const MUTE_MIC_WHILE_AGENT_SPEAKS = true;
-const MUTE_TAIL_MS = 600;
-let lastAgentAudioAt = 0;
-
-function agentIsSpeaking() {
-  const now = performance.now();
-  if (isAudioPlaying()) {
-    lastAgentAudioAt = now;
-    return true;
-  }
-  return now - lastAgentAudioAt < MUTE_TAIL_MS;
-}
-
-/** @type {Int16Array[]} */
-let pendingFrames = [];
-let pendingSamples = 0;
-
-function flushPending() {
-  if (pendingSamples === 0) return;
-  const merged = new Int16Array(pendingSamples);
-  let offset = 0;
-  for (const frame of pendingFrames) {
-    merged.set(frame, offset);
-    offset += frame.length;
-  }
-  pendingFrames = [];
-  pendingSamples = 0;
-  // Keep the stream continuous (zeros) rather than pausing it.
-  if (MUTE_MIC_WHILE_AGENT_SPEAKS && agentIsSpeaking()) merged.fill(0);
-  sendAudio(pcmBufferToBase64(merged.buffer));
-}
-
-/**
- * Start streaming microphone audio to AssemblyAI.
- * Must be called AFTER session.ready — caller is responsible for this gate.
+ * AssemblyAI Voice Agent user-speech transcript event types (confirmed):
+ *   transcript.user.delta  — partial/incremental word(s) while user is speaking
+ *                            { type, delta, start_ms, end_ms, ... }
+ *   transcript.user        — final committed transcript for one user utterance
+ *                            { type, text, ... }
  *
- * @returns {Promise<void>} Resolves when the audio pipeline is set up.
- * @throws {Error} If the microphone stream is unavailable or AudioWorklet fails.
+ * @param {object} [handlers]
+ * @param {function} [handlers.onSessionReady]    - Called when session.ready is received
+ * @param {function} [handlers.onMessage]         - Called for every message (for future steps)
+ * @param {function} [handlers.onUserTranscript]  - Called with { text, isFinal } for user speech
+ * @param {function} [handlers.onAgentResponse]   - Called with { text, isFinal } for agent speech
+ * @param {function} [handlers.onAgentAudio]      - Called with reply.audio data
+ * @param {function} [handlers.onReplyInterrupted] - Called when reply.done reports interruption
+ * @param {function} [handlers.onError]           - Called on WebSocket error
+ * @param {function} [handlers.onClose]           - Called when the connection closes
+ * @returns {Promise<object>} Resolves with the session.ready payload
  */
-async function startStreaming() {
-  if (streaming) {
-    console.warn("[voiceAudio] Already streaming — ignoring startStreaming().");
-    return;
+async function connect(handlers = {}) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    throw new Error("Already connected. Call disconnect() first.");
   }
 
-  const stream = getMicrophoneStream();
-  if (!stream) {
-    throw new Error("[voiceAudio] No microphone stream available. Call startMicrophone() first.");
-  }
+  if (typeof window !== "undefined") window.__voiceDebug = [];
+  const token = await fetchToken();
+  const url = `${ASSEMBLYAI_WS_BASE}?token=${encodeURIComponent(token)}`;
 
-  if (!isConnected()) {
-    throw new Error("[voiceAudio] WebSocket not connected. Call connect() first.");
-  }
+  return new Promise((resolve, reject) => {
+    ws = new WebSocket(url);
 
-  // Create an AudioContext at 24 kHz — AssemblyAI Voice Agent required rate.
-  // The browser will resample from the native device rate automatically.
-  try {
-    audioCtx = new AudioContext({ sampleRate: 24000 });
-  } catch (err) {
-    throw new Error("[voiceAudio] AudioContext creation failed: " + err.message);
-  }
+    ws.onopen = () => {
+      console.log("[voiceAgent] WebSocket open — sending session.update");
+      ws.send(JSON.stringify(SESSION_UPDATE));
+    };
 
-  // Resume the context if the browser suspended it (autoplay policy).
-  if (audioCtx.state === "suspended") {
-    await audioCtx.resume();
-  }
+    ws.onmessage = (event) => {
+      let msg;
+      try {
+        msg = JSON.parse(event.data);
+      } catch {
+        console.warn("[voiceAgent] Non-JSON message received:", event.data);
+        return;
+      }
 
-  // Load the PCM processor into the AudioWorklet.
-  try {
-    await audioCtx.audioWorklet.addModule(PROCESSOR_URL);
-  } catch (err) {
-    audioCtx.close();
-    audioCtx = null;
-    throw new Error("[voiceAudio] AudioWorklet addModule failed: " + err.message);
-  }
+      // Do not log reply.audio payloads because they contain base64 audio data.
+      if (
+        msg.type !== "reply.audio" &&
+        msg.type !== "transcript.user.delta" &&
+        msg.type !== "transcript.agent.delta"
+      ) {
+        console.log("[voiceAgent] event received:", msg.type);
+      }
 
-  // Wire: MediaStream → source → worklet
-  sourceNode  = audioCtx.createMediaStreamSource(stream);
-  workletNode = new AudioWorkletNode(audioCtx, "pcm-processor");
+      if (handlers.onMessage) {
+        handlers.onMessage(msg);
+      }
 
-  // Each message from the worklet is one 128-sample PCM16 ArrayBuffer.
-  workletNode.port.onmessage = (event) => {
-    if (!streaming || !isConnected()) {
-      return;
-    }
+      // ── Step 8: user speech transcript ─────────────────────────────────────
+      // transcript.user.delta — partial word(s) streamed while user is speaking
+      if (msg.type === "transcript.user.delta") {
+        const text = (msg.delta || "").trim();
+        debug("user_delta", { text, agentPlaying: isAudioPlaying() });
+        if (text && handlers.onUserTranscript) {
+          try {
+            handlers.onUserTranscript({ text, isFinal: false });
+          } catch (err) {
+            console.warn("[voiceAgent] onUserTranscript handler threw:", err);
+          }
+        }
+        return;
+      }
 
-    const frame = new Int16Array(event.data);
-    pendingFrames.push(frame);
-    pendingSamples += frame.length;
-    if (pendingSamples >= BATCH_SAMPLES) {
-      flushPending();
-    }
+      // transcript.user — final committed transcript for one user utterance
+      if (msg.type === "transcript.user") {
+        const text = (msg.text || "").trim();
+        debug("user_final", { text, agentPlaying: isAudioPlaying() });
+        if (text && handlers.onUserTranscript) {
+          try {
+            handlers.onUserTranscript({ text, isFinal: true });
+          } catch (err) {
+            console.warn("[voiceAgent] onUserTranscript handler threw:", err);
+          }
+        }
+        return;
+      }
 
-    frameCount++;
-    // Log once per 100 frames (~0.5 s at 24 kHz / 128 samples per frame)
-    if (frameCount % 100 === 0) {
-      console.log("[voiceAudio] audio frame sent (frame", frameCount, ")");
-    }
-  };
+      if (msg.type === "reply.started") {
+        debug("reply_started");
+        console.log("[voiceAgent] agent reply started", msg);
+        return;
+      }
 
-  workletNode.port.onmessageerror = (err) => {
-    console.error("[voiceAudio] WorkletNode message error:", err);
-  };
+      if (msg.type === "reply.audio") {
+        if (!interruptedReplyIds.has(msg.reply_id) && msg.data && handlers.onAgentAudio) {
+          handlers.onAgentAudio(msg.data, msg.reply_id);
+        }
+        return;
+      }
 
-  // Connect the graph — do NOT connect workletNode to audioCtx.destination
-  // (we have no need to play back the microphone audio locally).
-  sourceNode.connect(workletNode);
+      if (msg.type === "transcript.agent.delta") {
+        const text = (msg.delta || msg.text || "").trim();
+        if (text && handlers.onAgentResponse) {
+          handlers.onAgentResponse({ text, isFinal: false });
+        }
+        return;
+      }
 
-  pendingFrames = [];
-  pendingSamples = 0;
-  streaming  = true;
-  frameCount = 0;
-  console.log("[voiceAudio] microphone streaming started");
+      if (msg.type === "transcript.agent") {
+        const text = (msg.text || msg.transcript || "").trim();
+        if (text && handlers.onAgentResponse) {
+          handlers.onAgentResponse({ text, isFinal: true });
+        }
+        return;
+      }
+
+      if (msg.type === "reply.done") {
+        debug("reply_done", { status: msg.status });
+        console.log("[voiceAgent] agent reply done", msg);
+        if (msg.status === "interrupted") {
+          if (msg.reply_id) {
+            interruptedReplyIds.add(msg.reply_id);
+          }
+          if (handlers.onReplyInterrupted) {
+            handlers.onReplyInterrupted(msg.reply_id);
+          }
+        }
+        return;
+      }
+
+      if (msg.type === "session.ready") {
+        console.log("[voiceAgent] session.ready received", msg);
+        if (handlers.onSessionReady) {
+          handlers.onSessionReady(msg);
+        }
+        resolve(msg);
+        return;
+      }
+
+      if (msg.type === "session.error") {
+        const errMsg = (msg.error && msg.error.message) || JSON.stringify(msg);
+        console.error("[voiceAgent] session.error:", errMsg);
+        debug("session_error", { errMsg });
+        if (handlers.onError) {
+          handlers.onError(new Error(errMsg));
+        }
+        reject(new Error(`session.error: ${errMsg}`));
+        return;
+      }
+    };
+
+    ws.onerror = (event) => {
+      console.error("[voiceAgent] WebSocket error", event);
+      if (handlers.onError) {
+        handlers.onError(event);
+      }
+      reject(new Error("AssemblyAI WebSocket error"));
+    };
+
+    ws.onclose = (event) => {
+      console.log(`[voiceAgent] WebSocket closed (code=${event.code})`);
+      debug("ws_closed", { code: event.code, reason: event.reason });
+      if (handlers.onClose) {
+        handlers.onClose(event);
+      }
+      ws = null;
+    };
+  });
 }
 
 /**
- * Stop streaming and release all audio-processing resources.
- * Safe to call even if streaming is not active.
+ * Close the AssemblyAI Voice Agent WebSocket if it is open.
  */
-function stopStreaming() {
-  if (!streaming && !audioCtx) {
-    return;
+function disconnect() {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.close();
   }
-
-  streaming = false;
-  pendingFrames = [];
-  pendingSamples = 0;
-
-  // Disconnect the audio graph
-  if (sourceNode) {
-    try { sourceNode.disconnect(); } catch (_) { /* already disconnected */ }
-    sourceNode = null;
-  }
-  if (workletNode) {
-    workletNode.port.onmessage = null;
-    try { workletNode.disconnect(); } catch (_) { /* already disconnected */ }
-    workletNode = null;
-  }
-  if (audioCtx) {
-    audioCtx.close().catch(() => {});
-    audioCtx = null;
-  }
-
-  frameCount = 0;
-  console.log("[voiceAudio] microphone streaming stopped");
+  ws = null;
 }
 
 /**
- * Returns true if the audio pipeline is active.
+ * Returns true if the WebSocket is currently open.
  * @returns {boolean}
  */
-function isStreaming() {
-  return streaming;
+function isConnected() {
+  return ws !== null && ws.readyState === WebSocket.OPEN;
 }
 
-export { startStreaming, stopStreaming, isStreaming };
+/**
+ * Send a base64-encoded PCM16 audio chunk to the AssemblyAI Voice Agent.
+ * No-op if the WebSocket is not open.
+ * The caller is responsible for gating on session.ready before calling this.
+ *
+ * @param {string} base64Audio  Base64-encoded PCM16 mono 24 kHz audio
+ */
+function sendAudio(base64Audio) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    return;
+  }
+  ws.send(JSON.stringify({ type: "input.audio", audio: base64Audio }));
+}
+
+export { connect, disconnect, isConnected, sendAudio };
