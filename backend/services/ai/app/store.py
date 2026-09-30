@@ -1,6 +1,7 @@
 import os
 import json
 import uuid
+import queue
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict
 import psycopg2
@@ -10,18 +11,87 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://localhost/echomind_dev")
 SUGGESTION_COOLDOWN_MINUTES = 60
 
 
-def get_conn():
-    """Get PostgreSQL connection"""
-    # connect_timeout is a client-side libpq setting, so it works through
-    # Neon's pooled (PgBouncer) endpoint. Do NOT pass `options=` here: the
-    # pooler rejects startup parameters like statement_timeout.
-    conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+# --- Connection reuse -------------------------------------------------------
+# Opening a fresh connection to a remote Neon DB costs several network round
+# trips (TCP + TLS + auth). The old code did that for *every* query, so one
+# /api/remember call could open 10-15 connections and take 30s+. We keep a
+# few idle connections and reuse them; callers still just call get_conn()
+# and conn.close() (close() returns the connection to the idle pool).
+_idle = queue.LifoQueue(maxsize=5)
+
+
+def _connect():
+    # connect_timeout / keepalives are client-side libpq settings, so they
+    # work through Neon's pooled (PgBouncer) endpoint. Do NOT pass `options=`
+    # here: the pooler rejects startup parameters like statement_timeout.
+    conn = psycopg2.connect(
+        DATABASE_URL,
+        connect_timeout=10,
+        keepalives=1,
+        keepalives_idle=30,
+        keepalives_interval=10,
+        keepalives_count=3,
+    )
     conn.autocommit = False
-    # SET LOCAL is applied inside the transaction, which is pooler-safe.
-    # It lasts until the next commit/rollback, then resets.
-    with conn.cursor() as cur:
-        cur.execute("SET LOCAL statement_timeout = 15000")
     return conn
+
+
+def _release(conn):
+    try:
+        if conn.closed:
+            return
+        conn.rollback()  # no-op (no network) if the transaction already ended
+        _idle.put_nowait(conn)
+    except Exception:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+class _PooledConnection:
+    """Thin wrapper: behaves like a psycopg2 connection, but close() hands
+    the connection back to the idle pool instead of closing the socket."""
+    __slots__ = ("_conn", "_released")
+
+    def __init__(self, conn):
+        self._conn = conn
+        self._released = False
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def close(self):
+        if self._released:
+            return
+        self._released = True
+        _release(self._conn)
+
+
+def get_conn():
+    """Get a PostgreSQL connection (reused from the idle pool when possible)."""
+    while True:
+        try:
+            conn = _idle.get_nowait()
+            fresh = False
+        except queue.Empty:
+            conn = _connect()
+            fresh = True
+
+        try:
+            # SET LOCAL is applied inside the transaction (pooler-safe) and
+            # doubles as a cheap liveness check for reused connections.
+            with conn.cursor() as cur:
+                cur.execute("SET LOCAL statement_timeout = 15000")
+            return _PooledConnection(conn)
+        except (psycopg2.OperationalError, psycopg2.InterfaceError):
+            try:
+                conn.close()
+            except Exception:
+                pass
+            if fresh:
+                raise  # a brand-new connection failed: real DB problem
+            # else: a stale idle connection died; loop and try another/new
 
 
 def init_db():
@@ -124,7 +194,7 @@ def upsert_memory(mem_type: str, title: str, content: dict, importance: float = 
     try:
         if existing:
             # Merge content
-            merged_content = {**existing.get("content", {}), **content}
+            merged_content = {**(existing.get("content") or {}), **content}
             cursor.execute(
                 """UPDATE memories
                    SET content = %s,
