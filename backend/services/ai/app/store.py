@@ -422,10 +422,17 @@ def record_suggestion(memory_id: str, message: str, reason: str) -> Dict:
 
 
 def update_suggestion_status(suggestion_id: str, status: str) -> bool:
-    """Update suggestion status"""
+    """Update suggestion status.
+
+    The table has UNIQUE(memory_id, status). If this memory already has an older
+    row with the target status (for example an earlier 'accepted' or 'dismissed'
+    suggestion), a plain UPDATE would violate that constraint and crash with a 500.
+    So the older row holding the target status is replaced by this one, in the
+    same transaction.
+    """
     conn = get_conn()
     cursor = conn.cursor()
-    
+
     try:
         # proactive_suggestions has UNIQUE(memory_id, status): a memory can hold
         # only one 'accepted' (or 'dismissed') row. Accepting a second, newer
