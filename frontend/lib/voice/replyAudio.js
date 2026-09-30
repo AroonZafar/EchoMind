@@ -9,10 +9,10 @@
 const SAMPLE_RATE = 24000;
 
 /** Small startup/rebuffer delay (seconds) to smooth out bursty network delivery. */
-const PLAYBACK_LEAD_SECONDS = 0.25;
+const PLAYBACK_LEAD_SECONDS = 0.3;
 
-/** Tiny restart delay after a mid-reply underrun. */
-const UNDERRUN_LEAD_SECONDS = 0.02;
+/** Fixed cushion used when the queue runs dry in the middle of a reply. */
+const UNDERRUN_LEAD_SECONDS = 0.15;
 
 /** Silence longer than this means the previous reply finished. */
 const NEW_REPLY_IDLE_SECONDS = 0.6;
@@ -22,6 +22,22 @@ let audioContext = null;
 
 /** @type {number} */
 let nextStartTime = 0;
+
+/** Diagnostics: how late is the browser main thread, and how far apart do chunks arrive? */
+let lastTickAt = 0;
+let maxLagMs = 0;
+let lagTimer = null;
+let lastChunkAt = 0;
+
+function startLagMonitor() {
+  if (lagTimer || typeof window === "undefined") return;
+  lastTickAt = performance.now();
+  lagTimer = setInterval(() => {
+    const now = performance.now();
+    maxLagMs = Math.max(maxLagMs, now - lastTickAt - 50);
+    lastTickAt = now;
+  }, 50);
+}
 
 /** @type {number} */
 let queuedSources = 0;
@@ -43,6 +59,7 @@ function getAudioContext() {
  * @returns {Promise<boolean>} true when playback can be attempted
  */
 async function prepareReplyAudio() {
+  startLagMonitor();
   try {
     const context = getAudioContext();
     if (context.state === "suspended") {
@@ -101,19 +118,33 @@ function playReplyAudio(base64Audio) {
     source.buffer = buffer;
     source.connect(context.destination);
 
-    // Jitter buffer: if we underran (or this is the start of a reply), wait
-    // a short moment so following chunks can arrive before playback catches up.
+    const wallNow = performance.now();
+    const sinceLastChunkMs = lastChunkAt ? Math.round(wallNow - lastChunkAt) : 0;
+    lastChunkAt = wallNow;
+
     const now = context.currentTime;
     let startTime = nextStartTime;
     if (nextStartTime < now) {
       const idleSeconds = now - nextStartTime;
-      // Long silence = a new reply: buffer a little before starting.
-      // Short silence = mid-reply underrun: resume almost immediately,
-      // otherwise every late chunk would add an audible gap.
       const isNewReply = nextStartTime === 0 || idleSeconds > NEW_REPLY_IDLE_SECONDS;
-      startTime = now + (isNewReply ? PLAYBACK_LEAD_SECONDS : UNDERRUN_LEAD_SECONDS);
-      if (!isNewReply) {
-        console.warn("[replyAudio] underrun, gap (ms):", Math.round(idleSeconds * 1000));
+      if (isNewReply) {
+        startTime = now + PLAYBACK_LEAD_SECONDS;
+      } else {
+        startTime = now + UNDERRUN_LEAD_SECONDS;
+        const info = {
+          gapMs: Math.round(idleSeconds * 1000),
+          sinceLastChunkMs,
+          mainThreadLagMs: Math.round(maxLagMs),
+        };
+        maxLagMs = 0;
+        console.warn("[replyAudio] underrun", info);
+        if (typeof window !== "undefined") {
+          (window.__voiceDebug = window.__voiceDebug || []).push({
+            t: Math.round(performance.now()),
+            type: "underrun",
+            ...info,
+          });
+        }
       }
     }
     source.start(startTime);
