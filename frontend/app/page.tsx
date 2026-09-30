@@ -7,6 +7,7 @@ import GraphView, { type MemoryGraph } from "@/components/GraphView";
 import SuggestionCard, { type Suggestion } from "@/components/SuggestionCard";
 import { useVoiceAgent } from "@/hooks/useVoiceAgent";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { isAudioPlaying } from "@/lib/voice/replyAudio.js";
 
 type ApiMemory = { id: string; title: string; type: string; content?: Record<string, unknown>; status: string };
 type ApiRelation = { source: string; target: string; relation_type?: string };
@@ -109,7 +110,21 @@ export default function Home() {
     }
   }, []);
 
-  useEffect(() => { void loadMemories(voice.rememberResponses.length > 0); }, [loadMemories, voice.rememberResponses.length]);
+  useEffect(() => {
+    if (voice.rememberResponses.length === 0) { void loadMemories(false); return; }
+    // Wait for the agent to finish speaking: re-heating the force graph
+    // blocks the main thread and makes the reply audio stutter.
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let waits = 0;
+    const run = () => {
+      if (cancelled) return;
+      if (isAudioPlaying() && waits++ < 30) { timer = setTimeout(run, 500); return; }
+      void loadMemories(true);
+    };
+    run();
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+  }, [loadMemories, voice.rememberResponses.length]);
 
   const searchMemories = async (event: React.FormEvent) => {
     event.preventDefault();

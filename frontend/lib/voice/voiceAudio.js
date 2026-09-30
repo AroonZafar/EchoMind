@@ -25,6 +25,7 @@
 
 import { sendAudio, isConnected } from "./voiceAgent.js";
 import { getMicrophoneStream }    from "./microphone.js";
+import { isAudioPlaying }         from "./replyAudio.js";
 
 /** Path to the AudioWorklet processor module — served by the static server */
 const PROCESSOR_URL = "/voice/pcm-processor.js";
@@ -64,6 +65,28 @@ function pcmBufferToBase64(buffer) {
 /** Send ~40 ms per WebSocket message (960 samples at 24 kHz) instead of 128-sample frames. */
 const BATCH_SAMPLES = 960;
 
+/**
+ * Half-duplex mode: while the agent's reply is playing (plus a short tail),
+ * send silence instead of the real microphone signal. Without this the
+ * speakers leak into the mic, the server thinks the user started talking,
+ * marks the reply "interrupted", and the client throws the rest of the
+ * audio away -- which is heard as the voice cutting out.
+ * Set to false to allow barge-in (interrupting the agent), e.g. when the
+ * user wears headphones.
+ */
+const MUTE_MIC_WHILE_AGENT_SPEAKS = true;
+const MUTE_TAIL_MS = 600;
+let lastAgentAudioAt = 0;
+
+function agentIsSpeaking() {
+  const now = performance.now();
+  if (isAudioPlaying()) {
+    lastAgentAudioAt = now;
+    return true;
+  }
+  return now - lastAgentAudioAt < MUTE_TAIL_MS;
+}
+
 /** @type {Int16Array[]} */
 let pendingFrames = [];
 let pendingSamples = 0;
@@ -78,6 +101,8 @@ function flushPending() {
   }
   pendingFrames = [];
   pendingSamples = 0;
+  // Keep the stream continuous (zeros) rather than pausing it.
+  if (MUTE_MIC_WHILE_AGENT_SPEAKS && agentIsSpeaking()) merged.fill(0);
   sendAudio(pcmBufferToBase64(merged.buffer));
 }
 

@@ -1,6 +1,7 @@
 import os
 import json
 import uuid
+import queue
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict
 import psycopg2
@@ -10,11 +11,87 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://localhost/echomind_dev")
 SUGGESTION_COOLDOWN_MINUTES = 60
 
 
-def get_conn():
-    """Get PostgreSQL connection"""
-    conn = psycopg2.connect(DATABASE_URL)
+# --- Connection reuse -------------------------------------------------------
+# Opening a fresh connection to a remote Neon DB costs several network round
+# trips (TCP + TLS + auth). The old code did that for *every* query, so one
+# /api/remember call could open 10-15 connections and take 30s+. We keep a
+# few idle connections and reuse them; callers still just call get_conn()
+# and conn.close() (close() returns the connection to the idle pool).
+_idle = queue.LifoQueue(maxsize=5)
+
+
+def _connect():
+    # connect_timeout / keepalives are client-side libpq settings, so they
+    # work through Neon's pooled (PgBouncer) endpoint. Do NOT pass `options=`
+    # here: the pooler rejects startup parameters like statement_timeout.
+    conn = psycopg2.connect(
+        DATABASE_URL,
+        connect_timeout=10,
+        keepalives=1,
+        keepalives_idle=30,
+        keepalives_interval=10,
+        keepalives_count=3,
+    )
     conn.autocommit = False
     return conn
+
+
+def _release(conn):
+    try:
+        if conn.closed:
+            return
+        conn.rollback()  # no-op (no network) if the transaction already ended
+        _idle.put_nowait(conn)
+    except Exception:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+class _PooledConnection:
+    """Thin wrapper: behaves like a psycopg2 connection, but close() hands
+    the connection back to the idle pool instead of closing the socket."""
+    __slots__ = ("_conn", "_released")
+
+    def __init__(self, conn):
+        self._conn = conn
+        self._released = False
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def close(self):
+        if self._released:
+            return
+        self._released = True
+        _release(self._conn)
+
+
+def get_conn():
+    """Get a PostgreSQL connection (reused from the idle pool when possible)."""
+    while True:
+        try:
+            conn = _idle.get_nowait()
+            fresh = False
+        except queue.Empty:
+            conn = _connect()
+            fresh = True
+
+        try:
+            # SET LOCAL is applied inside the transaction (pooler-safe) and
+            # doubles as a cheap liveness check for reused connections.
+            with conn.cursor() as cur:
+                cur.execute("SET LOCAL statement_timeout = 15000")
+            return _PooledConnection(conn)
+        except (psycopg2.OperationalError, psycopg2.InterfaceError):
+            try:
+                conn.close()
+            except Exception:
+                pass
+            if fresh:
+                raise  # a brand-new connection failed: real DB problem
+            # else: a stale idle connection died; loop and try another/new
 
 
 def init_db():
@@ -117,7 +194,7 @@ def upsert_memory(mem_type: str, title: str, content: dict, importance: float = 
     try:
         if existing:
             # Merge content
-            merged_content = {**existing.get("content", {}), **content}
+            merged_content = {**(existing.get("content") or {}), **content}
             cursor.execute(
                 """UPDATE memories
                    SET content = %s,
@@ -285,6 +362,31 @@ def is_in_cooldown(memory_id: str) -> bool:
         return False
 
 
+def get_cooldown_memory_ids() -> set:
+    """IDs (as str) of every memory whose most recent suggestion is still
+    inside its cooldown window. One query for all memories -- same rule as
+    is_in_cooldown() (latest suggestion only), without a round trip per memory."""
+    conn = get_conn()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute(
+            """
+            SELECT memory_id FROM (
+                SELECT DISTINCT ON (memory_id) memory_id, cooldown_until
+                FROM proactive_suggestions
+                ORDER BY memory_id, created_at DESC
+            ) latest
+            WHERE cooldown_until IS NOT NULL
+              AND cooldown_until > (NOW() AT TIME ZONE 'utc')
+            """
+        )
+        return {str(row[0]) for row in cursor.fetchall()}
+    finally:
+        cursor.close()
+        conn.close()
+
+
 def record_suggestion(memory_id: str, message: str, reason: str) -> Dict:
     """Record a proactive suggestion. Upserts on (memory_id, status) --
     the table has a UNIQUE constraint on that pair, so once a memory has
@@ -332,19 +434,21 @@ def update_suggestion_status(suggestion_id: str, status: str) -> bool:
     cursor = conn.cursor()
 
     try:
+        # proactive_suggestions has UNIQUE(memory_id, status): a memory can hold
+        # only one 'accepted' (or 'dismissed') row. Accepting a second, newer
+        # suggestion for the same memory used to violate that and return a 500.
+        # Drop the older row with the target status first (same transaction);
+        # the row being updated keeps its newer created_at, so cooldown logic
+        # (latest suggestion wins) is unaffected. Re-confirming the same
+        # suggestion is a no-op update, so double clicks stay safe.
         cursor.execute(
-            """
-            DELETE FROM proactive_suggestions
-            WHERE status = %s
-              AND id <> %s
-              AND memory_id = (SELECT memory_id FROM proactive_suggestions WHERE id = %s)
-            """,
-            (status, suggestion_id, suggestion_id),
+            """DELETE FROM proactive_suggestions
+               WHERE status = %s
+                 AND id <> %s
+                 AND memory_id = (SELECT memory_id FROM proactive_suggestions WHERE id = %s)""",
+            (status, suggestion_id, suggestion_id)
         )
-        cursor.execute(
-            "UPDATE proactive_suggestions SET status = %s WHERE id = %s",
-            (status, suggestion_id),
-        )
+        cursor.execute("UPDATE proactive_suggestions SET status = %s WHERE id = %s", (status, suggestion_id))
         updated = cursor.rowcount > 0
         conn.commit()
         return updated

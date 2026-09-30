@@ -9,10 +9,10 @@
 const SAMPLE_RATE = 24000;
 
 /** Small startup/rebuffer delay (seconds) to smooth out bursty network delivery. */
-const PLAYBACK_LEAD_SECONDS = 0.3;
+const PLAYBACK_LEAD_SECONDS = 0.6;
 
 /** Fixed cushion used when the queue runs dry in the middle of a reply. */
-const UNDERRUN_LEAD_SECONDS = 0.15;
+const UNDERRUN_LEAD_SECONDS = 0.3;
 
 /** Silence longer than this means the previous reply finished. */
 const NEW_REPLY_IDLE_SECONDS = 0.6;

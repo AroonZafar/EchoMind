@@ -1,3 +1,5 @@
+import asyncio
+import time
 from typing import Optional, Tuple
 from fastapi import APIRouter, HTTPException
 from app.models import (
@@ -13,7 +15,7 @@ router = APIRouter(prefix="/api", tags=["memory"])
 FIRST_PERSON = {"i", "me", "my", "myself", "mine"}
 
 
-def resolve_known(name: str, name_to_id: dict) -> Optional[Tuple[str, str]]:
+def resolve_known(name: str, name_to_id: dict) -> Optional[Tuple[str, str]]:  # runs in a worker thread
     """Resolve an entity name to a memory ID, collapsing first-person
     pronouns (I/me/my/myself) into one canonical 'self' node.
     Only resolves names that are either a first-person pronoun or one of
@@ -70,10 +72,13 @@ async def remember(input_data: SpeechInput):
         if not input_data.transcript or not input_data.transcript.strip():
             raise HTTPException(status_code=400, detail="transcript cannot be empty")
 
+        t0 = time.perf_counter()
         extracted = await extract_memory_from_speech(input_data.transcript)
+        print(f"[remember] llm extraction took {time.perf_counter() - t0:.2f}s")
 
         if extracted.memory_type == "raw_unlinked" and not extracted.entities:
-            saved = store.upsert_memory(
+            saved = await asyncio.to_thread(
+                store.upsert_memory,
                 mem_type="raw",
                 title=extracted.summary[:60] or "unrecognized memory",
                 content={"raw_transcript": extracted.summary, "extraction_failed": True},
@@ -96,7 +101,8 @@ async def remember(input_data: SpeechInput):
             event_time = resolved if etype == "event" else None
             due_time = resolved if etype == "task" else None
 
-            saved = store.upsert_memory(
+            saved = await asyncio.to_thread(
+                store.upsert_memory,
                 mem_type=ent.type,
                 title=ent.name,
                 content=attrs,
@@ -113,17 +119,19 @@ async def remember(input_data: SpeechInput):
             # skip relations that point at a stray string (e.g. a bare
             # "Friday") that isn't itself an extracted entity, instead of
             # silently creating a junk node for it.
-            src = resolve_known(rel.source, name_to_id)
-            tgt = resolve_known(rel.target, name_to_id)
+            src = await asyncio.to_thread(resolve_known, rel.source, name_to_id)
+            tgt = await asyncio.to_thread(resolve_known, rel.target, name_to_id)
             if not src or not tgt:
                 print(f"Skipping relation with unresolved endpoint: {rel.source} -> {rel.target}")
                 continue
             src_id, src_name = src
             tgt_id, tgt_name = tgt
 
-            rel_id = store.add_relation(src_id, tgt_id, rel.relation)
+            rel_id = await asyncio.to_thread(store.add_relation, src_id, tgt_id, rel.relation)
             saved_relations.append({"id": rel_id, "source": src_name, "target": tgt_name, "relation": rel.relation})
 
+        print(f"[remember] total {time.perf_counter() - t0:.2f}s "
+              f"({len(saved_memories)} memories, {len(saved_relations)} relations)")
         return RememberResponse(extracted=extracted, saved_memories=saved_memories, saved_relations=saved_relations)
 
     except ValueError as e:
@@ -138,8 +146,8 @@ async def remember(input_data: SpeechInput):
 async def get_memories(include_forgotten: bool = False):
     """'What do you remember?' query."""
     try:
-        memories = store.list_memories(include_forgotten=include_forgotten)
-        relations = store.list_relations()
+        memories = await asyncio.to_thread(store.list_memories, include_forgotten=include_forgotten)
+        relations = await asyncio.to_thread(store.list_relations)
         return {"memories": memories, "relations": relations}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
@@ -165,10 +173,10 @@ async def check_relevance(req: RelevanceCheckRequest):
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
-def _set_suggestion_status(suggestion_id: str, status: str) -> dict:
+async def _set_suggestion_status(suggestion_id: str, status: str) -> dict:
     """Shared by confirm/dismiss. Always fails with a JSON error, never plain text."""
     try:
-        ok = store.update_suggestion_status(suggestion_id, status)
+        ok = await asyncio.to_thread(store.update_suggestion_status, suggestion_id, status)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
     if not ok:
@@ -178,12 +186,12 @@ def _set_suggestion_status(suggestion_id: str, status: str) -> dict:
 
 @router.post("/suggestions/confirm")
 async def confirm_suggestion(req: SuggestionActionRequest):
-    return _set_suggestion_status(req.suggestion_id, "accepted")
+    return await _set_suggestion_status(req.suggestion_id, "accepted")
 
 
 @router.post("/suggestions/dismiss")
 async def dismiss_suggestion(req: SuggestionActionRequest):
-    return _set_suggestion_status(req.suggestion_id, "dismissed")
+    return await _set_suggestion_status(req.suggestion_id, "dismissed")
 
 
 @router.post("/forget")
@@ -192,7 +200,7 @@ async def forget(req: ForgetRequest):
     it will no longer appear in normal retrieval or relevance checks."""
     if not req.title and not req.memory_id:
         raise HTTPException(status_code=400, detail="Provide either title or memory_id")
-    ok = store.forget_memory(title=req.title, memory_id=req.memory_id)
+    ok = await asyncio.to_thread(store.forget_memory, title=req.title, memory_id=req.memory_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Memory not found")
     return {"status": "forgotten"}
@@ -203,7 +211,7 @@ async def complete(req: CompleteRequest):
     """Mark a task/event memory completed so it stops generating reminders."""
     if not req.title and not req.memory_id:
         raise HTTPException(status_code=400, detail="Provide either title or memory_id")
-    ok = store.mark_completed(title=req.title, memory_id=req.memory_id)
+    ok = await asyncio.to_thread(store.mark_completed, title=req.title, memory_id=req.memory_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Memory not found")
     return {"status": "completed"}
