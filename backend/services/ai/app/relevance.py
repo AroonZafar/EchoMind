@@ -1,4 +1,5 @@
 import os
+import asyncio
 import json
 import re
 import httpx
@@ -225,14 +226,15 @@ async def check_relevance(context_text: str = "", force: bool = False):
     just because the same memory was already suggested within the last
     60 minutes. Normal (non-demo) callers should leave this False.
     """
-    memories = [m for m in store.list_memories() if m.get("status") == "active"]
+    all_memories = await asyncio.to_thread(store.list_memories)
+    memories = [m for m in all_memories if m.get("status") == "active"]
     triggered = []
 
     for memory in memories:
-        if not force and store.is_in_cooldown(memory["id"]):
+        if not force and await asyncio.to_thread(store.is_in_cooldown, memory["id"]):
             continue
 
-        scored = compute_relevance(memory, context_text, force=force)
+        scored = await asyncio.to_thread(compute_relevance, memory, context_text, force=force)
         if scored["score"] >= TRIGGER_THRESHOLD:
             reason = (
                 f"score={scored['score']} "
@@ -241,7 +243,7 @@ async def check_relevance(context_text: str = "", force: bool = False):
                 f"importance={scored['components']['importance']})"
             )
             message = await _generate_llm_suggestion_message(memory, reason)
-            record = store.record_suggestion(memory["id"], message, reason)
+            record = await asyncio.to_thread(store.record_suggestion, memory["id"], message, reason)
 
             triggered.append({
                 **scored,
