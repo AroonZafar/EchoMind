@@ -27,6 +27,7 @@ export async function POST(request: NextRequest) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ transcript: body.transcript }),
       cache: "no-store",
+      signal: AbortSignal.timeout(30000), // fail fast instead of waiting for a 524
     });
     const responseBody = await response.text();
     const upstreamType = response.headers.get("content-type") ?? "";
@@ -47,6 +48,12 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     console.error("Remember proxy failed:", error);
+    if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
+      return NextResponse.json(
+        { error: "AI memory service timed out. Please try again." },
+        { status: 504 },
+      );
+    }
     return NextResponse.json(
       { error: "AI memory service unavailable." },
       { status: 502 },
