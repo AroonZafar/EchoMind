@@ -362,6 +362,31 @@ def is_in_cooldown(memory_id: str) -> bool:
         return False
 
 
+def get_cooldown_memory_ids() -> set:
+    """IDs (as str) of every memory whose most recent suggestion is still
+    inside its cooldown window. One query for all memories -- same rule as
+    is_in_cooldown() (latest suggestion only), without a round trip per memory."""
+    conn = get_conn()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute(
+            """
+            SELECT memory_id FROM (
+                SELECT DISTINCT ON (memory_id) memory_id, cooldown_until
+                FROM proactive_suggestions
+                ORDER BY memory_id, created_at DESC
+            ) latest
+            WHERE cooldown_until IS NOT NULL
+              AND cooldown_until > (NOW() AT TIME ZONE 'utc')
+            """
+        )
+        return {str(row[0]) for row in cursor.fetchall()}
+    finally:
+        cursor.close()
+        conn.close()
+
+
 def record_suggestion(memory_id: str, message: str, reason: str) -> Dict:
     """Record a proactive suggestion. Upserts on (memory_id, status) --
     the table has a UNIQUE constraint on that pair, so once a memory has
@@ -402,9 +427,27 @@ def update_suggestion_status(suggestion_id: str, status: str) -> bool:
     cursor = conn.cursor()
     
     try:
+        # proactive_suggestions has UNIQUE(memory_id, status): a memory can hold
+        # only one 'accepted' (or 'dismissed') row. Accepting a second, newer
+        # suggestion for the same memory used to violate that and return a 500.
+        # Drop the older row with the target status first (same transaction);
+        # the row being updated keeps its newer created_at, so cooldown logic
+        # (latest suggestion wins) is unaffected. Re-confirming the same
+        # suggestion is a no-op update, so double clicks stay safe.
+        cursor.execute(
+            """DELETE FROM proactive_suggestions
+               WHERE status = %s
+                 AND id <> %s
+                 AND memory_id = (SELECT memory_id FROM proactive_suggestions WHERE id = %s)""",
+            (status, suggestion_id, suggestion_id)
+        )
         cursor.execute("UPDATE proactive_suggestions SET status = %s WHERE id = %s", (status, suggestion_id))
+        updated = cursor.rowcount > 0
         conn.commit()
-        return cursor.rowcount > 0
+        return updated
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         cursor.close()
         conn.close()
